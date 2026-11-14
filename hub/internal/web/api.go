@@ -577,6 +577,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer stop()
 	attached := time.Since(start)
+	if since == "" {
+		s.warm(r, userFrom(r))
+	}
 	// Why and when each stream ends, so a stream that keeps ending young is
 	// told from one a client or a proxy cut.
 	began, ended := time.Now(), "client gone"

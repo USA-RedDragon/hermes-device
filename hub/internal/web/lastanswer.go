@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -130,5 +131,46 @@ func (s *Server) lastAnswer(h http.HandlerFunc) http.HandlerFunc {
 		}
 		w.WriteHeader(cp.code)
 		_, _ = w.Write(cp.buf.Bytes())
+	}
+}
+
+// warm reads the kept answers a page asks for right after it opens a chat
+// (its activity and its place), when there are none yet, so those
+// requests are answered from the hub's memory and not after a round trip
+// to Hermes. ev is the request that opened the chat's event stream.
+func (s *Server) warm(ev *http.Request, user string) {
+	base := strings.TrimSuffix(ev.URL.EscapedPath(), "/events")
+	for _, x := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{{"/activity", s.handleActivity}, {"/place", s.handlePlace}} {
+		r, err := http.NewRequestWithContext(context.WithoutCancel(ev.Context()), http.MethodGet, base+x.path, nil)
+		if err != nil {
+			continue
+		}
+		r.SetPathValue("backend", ev.PathValue("backend"))
+		r.SetPathValue("session", ev.PathValue("session"))
+		key := lastKey(user, r)
+		c := &s.last
+		c.mu.Lock()
+		if c.by == nil {
+			c.by = map[string]*lastAnswer{}
+		}
+		a := c.by[key]
+		if a != nil && (a.reading || (a.body != nil && time.Since(a.at) <= lastFresh)) {
+			c.mu.Unlock()
+			continue
+		}
+		if a == nil {
+			if len(c.by) >= lastMax {
+				clear(c.by)
+			}
+			a = &lastAnswer{}
+			c.by[key] = a
+		}
+		a.reading = true
+		gen := a.gen
+		c.mu.Unlock()
+		go s.rememberRead(user, r, x.h, gen)
 	}
 }
