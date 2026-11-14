@@ -1576,3 +1576,10 @@ input.range::-moz-range-thumb { width: 1.2rem; height: 1.2rem; border-radius: 50
 .field .title { color: var(--fg); font-size: .92rem; }
 .set-pane .field > span.title:first-child { color: var(--fg); }
 .field small.floor { color: var(--muted); }
+
+/* The steps of a browser_batch card, and the page it read at the end. */
+ol.steps { list-style: decimal; margin: 0 0 .2rem; padding-left: 1.3rem; font-size: .92rem; }
+ol.steps li { padding: .15rem 0; }
+ol.steps .st { display: block; font-weight: 600; overflow-wrap: anywhere; }
+ol.steps .st + span { font-size: .85rem; overflow-wrap: anywhere; }
+.tool-page-read .pagemeta { color: var(--muted); font-size: .85rem; margin: .1rem 0 .3rem; overflow-wrap: anywhere; }

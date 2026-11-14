@@ -374,24 +374,109 @@ window.HubToolCard = (() => {
 
   const browserWords = {
     browser_navigate: ["globe", "Opened", "Opening", (a) => host(str(a.url))],
-    browser_click: ["cursor", "Clicked", "Clicking", (a) => str(a.ref)],
-    browser_type: ["cursor", "Typed into", "Typing into", (a) => str(a.ref)],
-    browser_press: ["cursor", "Pressed", "Pressing", (a) => str(a.key)],
+    browser_click: ["cursor", "Clicked", "Clicking", (a, t) => t],
+    browser_type: ["cursor", "Typed into", "Typing into", (a, t) => t],
+    browser_press: ["cursor", "Pressed", "Pressing", (a) => keyName(a.key)],
     browser_scroll: ["eye", "Scrolled the page", "Scrolling the page", () => ""],
     browser_back: ["eye", "Went back a page", "Going back a page", () => ""],
     browser_snapshot: ["eye", "Read the page", "Reading the page", () => ""],
     browser_screenshot: ["camera", "Took a screenshot", "Taking a screenshot", () => ""],
     browser_vision: ["eye", "Looked at the page", "Looking at the page", () => ""],
-    browser_hover: ["cursor", "Hovered over", "Hovering over", (a) => str(a.ref)],
+    browser_hover: ["cursor", "Hovered over", "Hovering over", (a, t) => t],
     browser_tabs: ["tabs", "Used the browser tabs", "Using the browser tabs", () => ""],
     browser_eval: ["globe", "Ran a script in the page", "Running a script in the page", () => ""],
   };
 
+  // keyName is a pressed key in words: Enter, Tab, Ctrl+A. Anything that is
+  // not a key name (a stray digit, a ref) is left out.
+  function keyName(k) {
+    const t = squash(k);
+    return t.length > 1 || /^[A-Za-z]$/.test(t) ? t : "";
+  }
+
+  // targetName is what the device plugin said the call acted on: the label
+  // the page gave the element, else its role. A ref is never shown.
+  function targetName(c) {
+    const t = isObj(c.res) && isObj(c.res.target) ? c.res.target : null;
+    if (!t) return "";
+    return str(t.name) ? short(t.name) : str(t.role) ? "the " + short(t.role) : "";
+  }
+
+  const hostOfUrl = (u) => (str(u) ? host(str(u)) : "");
+
+  // batchStep is one step of a browser_batch result: its words, state and
+  // the outcome shown beside it. A result from a plugin that sends no
+  // details falls back to its step lines.
+  function batchSteps(res) {
+    if (Array.isArray(res.details) && res.details.length) {
+      return res.details.filter(isObj).map((d) => ({
+        text: short(d.text) || "Step " + str(d.step),
+        state: str(d.state) || "done",
+        outcome: d.state === "failed" ? "Failed: " + (short(d.error) || "the step did not work") : d.state === "not_run" ? "Not run" : "Done" + (str(d.approved) ? " · approved " + short(d.approved) : ""),
+        form: d.action === "type" || d.action === "select",
+      }));
+    }
+    if (Array.isArray(res.steps)) {
+      return res.steps.map((l) => {
+        const t = str(l).replace(/^\d+\.\s*/, "");
+        const failed = /^Failed:/.test(t);
+        const skipped = /^Not run:/.test(t);
+        return { text: short(t.replace(/^(Failed|Not run):\s*/, "")), state: failed ? "failed" : skipped ? "not_run" : "done", outcome: failed ? "Failed" : skipped ? "Not run" : "Done", form: /^(Typed into|Selected)/.test(t) };
+      });
+    }
+    return [];
+  }
+
+  function batch_(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    const out = { icon: "list", blocks: [] };
+    const given = Array.isArray(a.steps) ? a.steps : [];
+    const steps = c.done ? batchSteps(res) : [];
+    const total = steps.length || (typeof res.total === "number" ? res.total : given.length);
+    const page = isObj(res.page) ? res.page : null;
+    const site = hostOfUrl(page && page.url) || hostOfUrl((given.find((x) => isObj(x) && x.url) || {}).url);
+    const form = steps.some((x) => x.form) || given.some((x) => isObj(x) && (x.action === "type" || x.action === "fill" || x.action === "select"));
+    const done = steps.filter((x) => x.state === "done").length;
+    const stopped = steps.findIndex((x) => x.state !== "done");
+    const bad = c.done && (res.ok === false || stopped >= 0) && !c.failed;
+    const count = bad ? done + " of " + total + " steps" : plural(total, "step");
+    const on = site ? " on " + site : "";
+    if (!c.done) {
+      out.title = (form ? "Filling the form" : "Running " + plural(total || 1, "browser step")) + on;
+    } else if (form) {
+      out.title = "Filled the form" + on + ": " + count;
+    } else if (steps.length && steps.length <= 3 && !bad) {
+      out.title = steps.map((x) => x.text).join(", then ").replace(/^./, (m) => m);
+    } else {
+      out.title = "Ran " + (bad ? count : plural(total, "browser step")) + on;
+    }
+    if (bad) {
+      out.bad = true;
+      const at = stopped >= 0 ? stopped + 1 : isObj(res.failed) ? res.failed.step : 0;
+      out.status = at ? "Stopped at step " + at : "Stopped";
+    } else {
+      out.status = "Done";
+    }
+    if (steps.length) out.blocks.push({ label: "Steps", kind: "steps", items: steps, text: steps.map((x, i) => (i + 1) + ". " + x.text + " (" + x.outcome + ")").join("\n") });
+    if (page && (str(page.snapshot) || str(page.text))) {
+      const meta = [str(page.title), site, Number.isFinite(page.element_count) ? plural(page.element_count, "element") : ""].filter(Boolean).join(" · ");
+      out.blocks.push({ label: "Page read at the end", kind: "page", meta, text: str(page.snapshot) || str(page.text) });
+    } else if (str(res.page_error)) {
+      out.blocks.push({ label: "Page read at the end", plain: true, text: str(res.page_error) });
+    }
+    return out;
+  }
+
   function browser(c) {
     const a = isObj(c.args) ? c.args : {};
+    if (c.name === "browser_batch") return batch_(c);
     const w = browserWords[c.name];
     const out = { icon: w ? w[0] : "globe", blocks: [] };
-    if (w) out.title = (c.done ? w[1] : w[2]) + (w[3](a) ? " " + short(w[3](a)) : "");
+    if (w) {
+      const arg = w[3](a, targetName(c));
+      out.title = (c.done ? w[1] : w[2]) + (arg ? " " + short(arg) : "");
+    }
     else out.title = verb(c, "Used", "Using") + " the browser: " + c.name.replace(/^browser_/, "").replace(/_/g, " ");
     out.status = "Done";
     if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
@@ -680,7 +765,7 @@ window.HubToolCard = (() => {
     else if (name.startsWith("browser_")) d = browser(c);
     else if (name === "todo" || name === "todo_list") d = todo(c);
     else d = generic(c);
-    d.state = !c.done ? "run" : c.failed ? "bad" : "ok";
+    d.state = !c.done ? "run" : c.failed || d.bad ? "bad" : "ok";
     const code = exitCode(isObj(c.res) ? c.res : null);
     if (c.failed && !(name === "terminal" && code !== null && code !== 0)) d.status = failure(c);
     if (!c.done) d.status = d.waiting ? "Waiting for approval" : "";
@@ -770,8 +855,9 @@ window.HubToolCard = (() => {
     if (lineWords[name]) return { icon: lineWords[name][0], text: lineWords[name][1] };
     if (browserWords[name]) {
       const w = browserWords[name];
-      return { icon: w[0], text: w[2] + tail(w[3]({ url: arg, ref: arg, key: arg })) };
+      return { icon: w[0], text: w[2] + (name === "browser_navigate" ? tail(w[3]({ url: arg }, "")) : "") };
     }
+    if (name === "browser_batch") return { icon: "list", text: "Running browser steps" };
     if (name.startsWith("browser_")) return { icon: "globe", text: "Using the browser" };
     return { icon: "tool", text: "Using " + toolLabel(name) };
   }
@@ -905,8 +991,21 @@ window.HubToolCard = (() => {
       const sec = el("div", "notice-sec tool-sec");
       sec.append(el("b", "", b.label));
       let body;
-      if (b.plain) {
+      if (b.kind === "steps") {
+        body = el("ol", "steps");
+        for (const x of b.items) {
+          const li = el("li");
+          li.append(el("span", "st", x.text), el("span", x.state === "failed" ? "notice-bad" : x.state === "not_run" ? "notice-still" : "notice-ok", x.outcome));
+          body.append(li);
+        }
+      } else if (b.plain) {
         body = el("div", "tool-q", b.text);
+      } else if (b.kind === "page") {
+        body = el("div", "tool-page-read");
+        if (b.meta) body.append(el("div", "pagemeta", b.meta));
+        const pre = el("pre", "tool-box");
+        pre.textContent = b.text;
+        body.append(pre);
       } else if (b.kind === "diff") {
         body = ctx.diff(b.text);
         body.classList.add("tool-box");
