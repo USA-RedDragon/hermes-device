@@ -46,14 +46,7 @@ window.HubActivity = (ctx) => {
     return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
   }
 
-  function toast(text) {
-    const x = $("toast");
-    if (!x) return;
-    x.textContent = text;
-    x.hidden = false;
-    clearTimeout(toast.h);
-    toast.h = setTimeout(() => { x.hidden = true; }, 2200);
-  }
+  const toast = window.HubToast.show;
 
   function push(row, kind, text) {
     text = String(text || "").trim();
@@ -619,13 +612,13 @@ window.HubActivity = (ctx) => {
     return name === "delegate_task" || (name === "terminal" && !!(args && args.background));
   }
 
-  async function act(fn, ok, bad) {
+  async function act(fn, ok, bad, name) {
     try {
       await fn();
-      if (ok) toast(ok);
+      if (ok) toast(ok, { ok: true, name });
       soon();
     } catch (e) {
-      toast((bad || "Could not do that") + ": " + e.message);
+      toast((bad || "Could not do that") + ": " + e.message, { bad: true });
     }
   }
 
@@ -684,7 +677,7 @@ window.HubActivity = (ctx) => {
           await navigator.clipboard.writeText(raw);
           toast("Copied");
         } catch (_) {
-          toast("The browser did not allow copying");
+          toast("Could not copy: the browser did not allow it", { bad: true });
         }
       };
       cp.onkeydown = stop;
@@ -815,7 +808,7 @@ window.HubActivity = (ctx) => {
           inp.value = "";
           await readSteps(r);
           draw();
-        }, "Sent to " + (r.goal || "the subagent") + ". It reads it at its next step.", "Could not send").finally(() => { send.disabled = false; });
+        }, "Sent to {name}. It reads it at its next step.", "Could not send", r.goal || "the subagent").finally(() => { send.disabled = false; });
       };
       b.append(form);
     }
@@ -828,7 +821,7 @@ window.HubActivity = (ctx) => {
         const got = await api("POST", chat.base + "/subagents-paused", { paused: !S.paused });
         S.paused = !!(got && got.paused);
         draw();
-      }, S.paused ? "New subagents can start again" : "No new subagents start until you resume. Running ones go on.", "Could not change it");
+      }, S.paused ? "Subagents can start again." : "Paused. Running subagents go on.", S.paused ? "Could not resume" : "Could not pause");
       acts.append(p);
     }
     if (r.kind === "command" && (r.output || r.tail.length)) {

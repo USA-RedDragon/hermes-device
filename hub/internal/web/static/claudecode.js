@@ -23,14 +23,7 @@ window.HubClaudeCode = (ctx) => {
   const usd = (n) => "$" + n.toFixed(2);
   const svgEl = (t, a) => { const e = document.createElementNS(ns, t); for (const x in a) e.setAttribute(x, a[x]); return e; };
 
-  function toast(text) {
-    const x = document.getElementById("toast");
-    if (!x) return;
-    x.textContent = text;
-    x.hidden = false;
-    clearTimeout(toast.h);
-    toast.h = setTimeout(() => { x.hidden = true; }, 2000);
-  }
+  const toast = window.HubToast.show;
 
   function seg(label, opts, key, redraw) {
     const g = el("div", "cc-seg");
@@ -122,11 +115,11 @@ window.HubClaudeCode = (ctx) => {
         save.disabled = true;
         try {
           await api("PUT", "/api/claude-code/accounts/" + encodeURIComponent(g.account_uuid) + "/name", { name });
-          toast("Named");
+          toast("Named", { ok: true });
           reload();
         } catch (e) {
           save.disabled = false;
-          toast("Could not save the name: " + e.message);
+          toast("Could not save the name: " + e.message, { bad: true });
         }
       };
       save.onclick = done;

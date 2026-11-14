@@ -100,7 +100,7 @@ window.HubMsgActions = (ctx) => {
       await navigator.clipboard.writeText(text);
       ctx.toast("Copied");
     } catch (_) {
-      ctx.toast("The browser did not allow copying");
+      ctx.toast("Could not copy: the browser did not allow it", { bad: true });
     }
   }
 
@@ -282,7 +282,7 @@ window.HubMsgActions = (ctx) => {
         for (let j = i - 1; j >= 0 && through === null; j--) through = rowID(rows[j]);
         prefill = textOf(b);
         if (through === null) {
-          ctx.toast("This is the first message. Copy it into a new chat instead.");
+          ctx.toast("First message: copy it to a new chat");
           return;
         }
       } else {

@@ -17,7 +17,7 @@ const ticks = [];
 const tickClock = () => { for (const f of ticks) f(); };
 let tid = 0;
 const ids = {};
-for (const id of ["actbody", "actbtn", "actclose", "actcount", "actsum", "app", "c-bg", "c-sub", "tab-bg", "tab-sub", "toast", "tok", "toksub", "tokturn"]) ids[id] = new El("div");
+for (const id of ["actbody", "actbtn", "actclose", "actcount", "actsum", "app", "c-bg", "c-sub", "tab-bg", "tab-sub", "tok", "toksub", "tokturn"]) ids[id] = new El("div");
 const doc = Object.assign({}, document, { getElementById: (id) => ids[id], hidden: false, activeElement: null, addEventListener: () => {}, querySelector: () => null, body: new El("body") });
 const copied = [];
 const sandbox = {
@@ -30,6 +30,8 @@ const sandbox = {
   location: { hash: "" }, navigator: { clipboard: { writeText: async (t) => { copied.push(t); } } },
 };
 sandbox.window = sandbox;
+const toasts = [];
+sandbox.window.HubToast = { show: (text, opts) => { toasts.push([text, opts]); } };
 sandbox.window.HubBackoff = () => ({ next: () => 3000, reset: () => {} });
 sandbox.window.HubIcons = { icon: (name) => el("svg", "ico i-" + name), button: (name, label, cls) => { const b = el("button", cls); b.title = label; return b; } };
 vm.createContext(sandbox);

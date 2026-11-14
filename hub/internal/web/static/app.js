@@ -76,13 +76,7 @@
     if (bannerKey === key) banner("");
   }
 
-  function toast(text) {
-    const x = $("toast");
-    x.textContent = text;
-    x.hidden = false;
-    clearTimeout(toast.h);
-    toast.h = setTimeout(() => { x.hidden = true; }, 2200);
-  }
+  const toast = window.HubToast.show;
 
   function ago(iso) {
     const v = Date.parse(iso);
@@ -1256,7 +1250,7 @@
           p.bubble.classList.add("pending");
           this.label(p, el("div", "queued", t("queued")));
         }
-        toast("Stopping the turn; Talaria reads your message next");
+        toast("Stopping; your message is next");
       } catch (e) {
         p.now = false;
         banner("Could not stop and send: " + e.message, true);
@@ -1403,7 +1397,7 @@
         card.call.out = o.out;
         card.view.update(card.call);
       } catch (e) {
-        toast("Could not load the output: " + e.message);
+        toast("Could not load the output: " + e.message, { bad: true });
       }
     }
 
@@ -3747,10 +3741,10 @@
           if (r.output) chat.add(el("div", "msg result", r.output));
         } else if (r && r.steered && p) {
           chat.steered(p);
-          toast("Sent; Talaria reads it after its current step");
+          toast("Sent. Read after the current step.", { ok: true });
         } else if (p) {
           chat.queued(p.bubble);
-          if (steer) toast("Queued: Talaria reads it when the current turn ends");
+          if (steer) toast("Queued for the end of the turn");
         }
       }
       composer.sent(chat);

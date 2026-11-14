@@ -28,13 +28,7 @@ window.HubScheduled = (ctx) => {
   const key = (j) => j.backend_id + "/" + j.id;
   const byKey = (k) => data.jobs.find((j) => key(j) === k);
 
-  function toast(text) {
-    const x = document.getElementById("toast");
-    x.textContent = text;
-    x.hidden = false;
-    clearTimeout(toast.h);
-    toast.h = setTimeout(() => { x.hidden = true; }, 2200);
-  }
+  const toast = window.HubToast.show;
 
   function badge() {
     nav.hidden = false;
@@ -278,29 +272,29 @@ window.HubScheduled = (ctx) => {
     return b;
   }
 
-  async function act(btn, fn) {
+  async function act(btn, fn, what) {
     btn.disabled = true;
     try {
       return await fn();
     } catch (e) {
-      toast(e.message);
+      toast("Could not " + what + ": " + e.message, { bad: true });
       btn.disabled = false;
       return null;
     }
   }
 
   async function runNow(j, btn) {
-    const ok = await act(btn, () => api("POST", jobPath(j, "/run")));
+    const ok = await act(btn, () => api("POST", jobPath(j, "/run")), "start the run");
     if (!ok) return;
     j.state = "run";
     fast = Date.now() + 60000;
-    toast("Started. The result goes to " + j.results_text);
+    toast("Started. Result goes to " + j.results_text, { ok: true });
     draw();
     schedule();
   }
 
   async function cancelRun(j, btn) {
-    const r = await act(btn, () => api("POST", jobPath(j, "/cancel")));
+    const r = await act(btn, () => api("POST", jobPath(j, "/cancel")), "cancel the run");
     if (!r) return;
     toast(r.cancelled ? "Run cancelled; schedule unchanged" : "Nothing was running");
     fast = Date.now() + 20000;
@@ -309,7 +303,7 @@ window.HubScheduled = (ctx) => {
 
   async function toggle(j, btn) {
     const resume = j.state === "paused";
-    const r = await act(btn, () => api("POST", jobPath(j, resume ? "/resume" : "/pause")));
+    const r = await act(btn, () => api("POST", jobPath(j, resume ? "/resume" : "/pause")), resume ? "resume the job" : "pause the job");
     if (!r) return;
     replace(r);
     toast(resume ? "Resumed" : "Paused");
@@ -317,7 +311,7 @@ window.HubScheduled = (ctx) => {
   }
 
   async function remove(j, btn) {
-    const r = await act(btn, () => api("DELETE", jobPath(j)));
+    const r = await act(btn, () => api("DELETE", jobPath(j)), "delete the job");
     if (!r) return;
     data.jobs = data.jobs.filter((x) => key(x) !== key(j));
     open.delete(key(j));
@@ -331,7 +325,7 @@ window.HubScheduled = (ctx) => {
   // the job it changes ("" for a new one).
   function startNew() {
     const b = ctx.defaultBackend() && backends.some((x) => x.id === ctx.defaultBackend()) ? ctx.defaultBackend() : (backends[0] || {}).id;
-    if (!b) { toast("You have no agent server to schedule on"); return; }
+    if (!b) { toast("No agent server to schedule on"); return; }
     if (form && form.draft) discard(form);
     editing = "new";
     form = { backend: b, job: null, name: "", schedule: "", prompt: "", model: "", results: "general", draft: "", preview: null, saving: false };
@@ -522,7 +516,7 @@ window.HubScheduled = (ctx) => {
   async function submit(j, btn) {
     const f = form;
     if (!f.name.trim() || !f.schedule.trim() || !f.prompt.trim()) {
-      toast("A job needs a name, a time and instructions");
+      toast("Add a name, time and instructions");
       return;
     }
     const [provider, model] = f.model ? f.model.split("\n") : ["", ""];
@@ -546,12 +540,12 @@ window.HubScheduled = (ctx) => {
       editing = "";
       form = null;
       badge();
-      toast(j ? "Saved" : "Scheduled");
+      toast(j ? "Saved" : "Scheduled", { ok: true });
       draw();
     } catch (e) {
       f.saving = false;
       btn.disabled = false;
-      toast(e.message);
+      toast("Could not " + (j ? "save" : "schedule") + " the job: " + e.message, { bad: true });
     }
   }
 

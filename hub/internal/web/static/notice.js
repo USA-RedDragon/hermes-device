@@ -509,7 +509,7 @@ window.HubNotice = (() => {
         await navigator.clipboard.writeText(raw);
         ctx.toast("Copied");
       } catch (_) {
-        ctx.toast("The browser did not allow copying");
+        ctx.toast("Could not copy: the browser did not allow it", { bad: true });
       }
     };
     body.append(copy);

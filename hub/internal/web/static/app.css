@@ -942,8 +942,23 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .mc-end .ts { display: block; margin-top: .15rem; }
 dialog.steps { width: min(48rem, calc(100vw - 1rem)); }
 dialog.steps .pbody { overflow-y: auto; }
-.toast { position: fixed; bottom: calc(1rem + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 110;
-  max-width: min(30rem, calc(100vw - 2rem)); background: var(--fg); color: var(--bg); padding: .45rem .8rem; border-radius: 8px; font-size: .85rem; }
+/* Toasts (toast.js): top right under the header, so they never cover the composer. */
+.toasts { position: fixed; z-index: 110; top: calc(3.5rem + env(safe-area-inset-top)); right: .75rem;
+  width: min(28rem, calc(100vw - 1.5rem)); display: flex; flex-direction: column; gap: .4rem; pointer-events: none; }
+.toast { pointer-events: auto; display: flex; align-items: flex-start; gap: .5rem; padding: .45rem .35rem .45rem .7rem;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 8px; font-size: .85rem; line-height: 1.35; box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+  animation: toast-in .15s ease-out; }
+.toast.ok { border-left-color: var(--ok); }
+.toast.bad { border-left-color: var(--bad); }
+.toast .tx { flex: 1; min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.toast .tx b { font-weight: 600; }
+.toast .x { flex: none; width: 1.5rem; height: 1.5rem; margin: -.1rem 0; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.toast .x:hover { background: var(--hover); color: var(--fg); }
+.toast .x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@keyframes toast-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+@media (max-width: 760px) { .toasts { right: 0; left: 0; margin: 0 auto; } }
 @media (max-width: 900px) {
   .app, .app.act-closed { grid-template-columns: var(--wl, 17rem) minmax(0, 1fr); }
   .act { position: fixed; inset: 0 0 0 auto; width: min(24rem, 100%); z-index: 5; box-shadow: -8px 0 24px rgba(0, 0, 0, .2); }
