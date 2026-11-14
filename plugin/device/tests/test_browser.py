@@ -205,7 +205,7 @@ class ToolTests(BrowserBase):
         names = {"browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_vision",
                  "browser_tabs", "browser_back", "browser_status", "browser_screenshot", "browser_press",
                  "browser_hover", "browser_scroll", "browser_eval", "browser_use_device", "browser_login",
-                 "browser_check"}
+                 "browser_check", "browser_batch"}
         self.assertEqual(set(browser.SCHEMAS), names)
         self.assertEqual(self.registry.get_toolset_for_tool("browser_click"), "device-browser")
         defs = {d["function"]["name"] if "function" in d else d["name"]
@@ -914,7 +914,7 @@ class ToolTests(BrowserBase):
             self.assertLessEqual(set(example), set(schema["parameters"]["properties"]), name)
             self.assertLessEqual(set(schema["parameters"]["required"]), set(example) | {"device"}, name)
             total += len(json.dumps({"type": "function", "function": schema}, ensure_ascii=False))
-        self.assertLess(total, 10500, "the eager toolset's schemas cost about chars/4 tokens on every turn")
+        self.assertLess(total, 12000, "the eager toolset's schemas cost about chars/4 tokens on every turn")
 
     def test_vision_multimodal(self):
         with mock.patch.object(browser, "_native_vision", lambda: True), \
@@ -1996,6 +1996,196 @@ class HermesBrowserContract(unittest.TestCase):
         import toolsets
         core_tools = {t for ts in toolsets.TOOLSETS.values() for t in ts.get("tools", [])}
         self.assertFalse(core_tools & set(browser.SCHEMAS))
+
+
+batch = core._load_sibling("hermes_device_batch", "batch.py")
+
+FORM_OUTLINE = '\n'.join([
+    '- textbox "Email" [ref=e1]', '- textbox "Name" [ref=e2]', '- combobox "Color" [ref=e3]', '- button "Save" [ref=e4]'])
+RENDERED = '\n'.join([
+    '- textbox "Email" [ref=e11]', '- textbox "Name" [ref=e12]', '- combobox "Color" [ref=e13]', '- button "Save" [ref=e14]'])
+
+
+class BatchSteps(unittest.TestCase):
+    def test_parse_valid(self):
+        steps = batch.parse_steps([{"action": "type", "ref": "e1", "text": "hi"}, {"action": "key", "key": "Enter"},
+                                   {"action": "wait", "text": "Done"}, {"action": "select", "name": "Color", "text": "Red"}])
+        self.assertEqual([s["action"] for s in steps], ["type", "press", "wait_for", "select"])
+        self.assertEqual(steps[3]["value"], "Red")
+        self.assertEqual(steps[2]["seconds"], 10.0)
+
+    def test_parse_json_string(self):
+        self.assertEqual(batch.parse_steps('[{"action": "click", "ref": "e2"}]')[0]["ref"], "e2")
+
+    def test_parse_rejects(self):
+        for bad, word in (([], "non-empty"), ("nope", "list of step"), ([1], "step 1"),
+                          ([{"action": "dance"}], "action must be"),
+                          ([{"action": "click"}], "give ref"),
+                          ([{"action": "click", "ref": "button"}], "ref must be"),
+                          ([{"action": "press"}], "key is required"),
+                          ([{"action": "click", "ref": "e1", "text": "x"}], "text does not apply"),
+                          ([{"action": "select", "ref": "e1"}], "value is required"),
+                          ([{"action": "wait_for"}], "text or selector"),
+                          ([{"action": "navigate"}], "url is required"),
+                          ([{"action": "scroll"}], "give direction"),
+                          ([{"action": "click", "ref": "e1"}] * 26, "at most 25")):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                batch.parse_steps(bad)
+            self.assertIn(word, str(cm.exception))
+
+    def test_rematch_by_role_name_and_position(self):
+        old = batch._positions(batch.parse_outline(FORM_OUTLINE))
+        entries = batch.parse_outline(RENDERED)
+        self.assertEqual(batch.rematch(old["e2"], entries), "e12")
+        self.assertEqual(batch.rematch(old["e4"], entries), "e14")
+
+    def test_rematch_twins_and_gone(self):
+        twins = '- button "Add" [ref=e1]\n- button "Add" [ref=e2]'
+        old = batch._positions(batch.parse_outline(twins))
+        again = batch.parse_outline('- button "Add" [ref=e7]\n- button "Add" [ref=e8]')
+        self.assertEqual(batch.rematch(old["e2"], again), "e8")
+        with self.assertRaises(batch.StepError):
+            batch.rematch(old["e2"], batch.parse_outline('- button "Add" [ref=e7]'))
+        with self.assertRaises(batch.StepError) as cm:
+            batch.rematch(old["e1"], batch.parse_outline('- link "Home" [ref=e1]'))
+        self.assertEqual(cm.exception.code, "gone")
+
+    def test_find_named(self):
+        entries = batch.parse_outline(RENDERED)
+        self.assertEqual(batch.find_named(entries, "name"), "e12")
+        self.assertEqual(batch.find_named(entries, "Save", "button"), "e14")
+        with self.assertRaises(batch.StepError):
+            batch.find_named(entries, "Nothing")
+
+    def test_words_name_the_element_never_the_text(self):
+        label = ("textbox", "Search", 0, 1)
+        self.assertEqual(batch.step_words({"action": "type", "ref": "e1", "text": "secret"}, label, past=True), 'Typed into "Search"')
+        self.assertEqual(batch.step_words({"action": "press", "key": "Enter"}, None, past=True), "Pressed Enter")
+
+
+class BatchTool(BrowserBase):
+    def setUp(self):
+        super().setUp()
+        self.fake.outline = FORM_OUTLINE
+        self.fake.inspect = dict(self.fake.inspect, target={"kind": "field", "host": "example.com", "form": True})
+        for name in ("_LABELS",):
+            p = mock.patch.object(batch, name, {})
+            p.start()
+            self.addCleanup(p.stop)
+
+    def snapshot(self):
+        self.run_tool("browser_snapshot", tab_id=7)
+
+    def ops(self):
+        return [r["op"] for r in self.fake.requests]
+
+    def test_form_fill_is_one_call_and_one_read(self):
+        self.snapshot()
+        self.fake.requests.clear()
+        out = self.run_tool("browser_batch", tab_id=7, steps=[
+            {"action": "type", "ref": "e1", "text": "a@b.c"}, {"action": "type", "ref": "e2", "text": "Ada"},
+            {"action": "select", "ref": "e3", "value": "Red"}, {"action": "press", "key": "Tab"}])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["completed"], 4)
+        self.assertEqual(out["steps"][0], '1. Typed into "Email"')
+        self.assertEqual(out["steps"][2], '3. Selected "Red" in "Color"')
+        self.assertEqual(self.ops().count("snapshot"), 1, "one page read at the end")
+        self.assertEqual(self.last("select")["args"]["value"], "Red")
+        self.assertIn("page", out)
+        self.assertTrue(self.last("snapshot")["args"]["interactive_only"])
+
+    def test_snapshot_none_and_mode(self):
+        self.snapshot()
+        self.fake.requests.clear()
+        out = self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[{"action": "click", "ref": "e4"}])
+        self.assertNotIn("page", out)
+        self.assertNotIn("snapshot", self.ops())
+
+    def test_refs_survive_a_rerender(self):
+        self.snapshot()
+        real = self.fake.answer
+        state = {"typed": 0}
+
+        def answer(msg):
+            if msg["op"] == "type":
+                state["typed"] += 1
+                self.fake.outline = RENDERED  # the page numbered its elements again
+            if msg["op"] == "inspect" and msg["args"].get("ref") in ("e1", "e2", "e3", "e4") and state["typed"]:
+                return {"ok": False, "code": "failed", "error": "unknown or stale ref " + msg["args"]["ref"] + "; take a new snapshot"}
+            return real(msg)
+
+        with mock.patch.object(self.fake, "answer", answer):
+            out = self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[
+                {"action": "type", "ref": "e1", "text": "x"}, {"action": "type", "ref": "e2", "text": "Ada"},
+                {"action": "click", "ref": "e4"}])
+        self.assertTrue(out["ok"], out)
+        refs = [r["args"]["ref"] for r in self.fake.requests if r["op"] in ("type", "click")]
+        self.assertEqual(refs, ["e1", "e12", "e14"])
+        self.assertIn("note", out)
+
+    def test_name_finds_the_element(self):
+        out = self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[
+            {"action": "type", "name": "Name", "text": "Ada"}])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(self.last("type")["args"]["ref"], "e2")
+
+    def test_stops_on_error_by_default(self):
+        self.snapshot()
+        out = self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[
+            {"action": "type", "name": "Nope", "text": "x"}, {"action": "click", "ref": "e4"}])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["failed"]["step"], 1)
+        self.assertTrue(out["steps"][1].startswith("2. Not run"))
+        self.assertNotIn("click", self.ops())
+
+    def test_continue_on_error(self):
+        self.snapshot()
+        out = self.run_tool("browser_batch", tab_id=7, snapshot="none", stop_on_error=False, steps=[
+            {"action": "type", "name": "Nope", "text": "x"}, {"action": "click", "ref": "e4"}])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["completed"], 1)
+        self.assertIn("click", self.ops())
+
+    def test_one_approval_for_the_whole_batch(self):
+        self.snapshot()
+        self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[
+            {"action": "type", "ref": "e1", "text": "x"}, {"action": "press", "key": "Enter", "ref": "e1"}])
+        self.assertEqual(self.decision["rule_key"], "browser:submit:example.com")
+        self.assertIn("1. Type into", self.decision["message"])
+        self.assertIn("2. Press Enter", self.decision["message"])
+        self.assertNotIn('"x"', self.decision["message"].replace('"Email"', ""))
+        self.assertEqual(self.last("press")["args"]["guard"]["submit_hosts"], ["example.com"])
+
+    def test_declined_batch_runs_nothing(self):
+        self.snapshot()
+        self.fake.requests.clear()
+        self.answer = False
+        out = self.run_tool("browser_batch", tab_id=7, steps=[{"action": "click", "ref": "e4"},
+                                                              {"action": "press", "key": "Enter", "ref": "e1"}])
+        self.assertIn("denied", out["error"])
+        self.assertNotIn("click", self.ops())
+
+    def test_uncovered_submit_is_refused_by_the_handler(self):
+        out = json.loads(self.registry.dispatch("browser_batch", {"tab_id": 7, "snapshot": "none", "steps": [
+            {"action": "press", "key": "Enter", "ref": "e1"}]}, task_id="t", session_id=self.session))
+        self.assertEqual(out["failed"]["code"], "approval")
+        self.assertNotIn("press", self.ops())
+
+    def test_salesforce_click_asks(self):
+        self.fake.inspect = dict(self.fake.inspect, host="x.my.salesforce.com", top_host="x.my.salesforce.com",
+                                 protected=True, target={"kind": "other"})
+        self.snapshot()
+        self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[{"action": "click", "ref": "e4"}])
+        self.assertEqual(self.decision["rule_key"], "browser:click:x.my.salesforce.com")
+
+    def test_bad_steps_report_bad_arguments(self):
+        out = self.run_tool("browser_batch", tab_id=7, steps=[{"action": "dance"}])
+        self.assertEqual(out["code"], "bad_arguments")
+
+    def test_schema_and_descriptions_prefer_batch(self):
+        self.assertIn("PREFER THIS", browser.SCHEMAS["browser_batch"]["description"])
+        self.assertIn("browser_batch", browser.SCHEMAS["browser_snapshot"]["description"])
+        self.assertIn("browser_batch", browser.GATED)
 
 
 if __name__ == "__main__":

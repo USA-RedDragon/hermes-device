@@ -156,6 +156,44 @@ class PluginEndToEnd(unittest.TestCase):
         self.frames_and_scripts(tab)
         self.assertIn("closed", self.tool("browser_tabs", action="close", tab_id=tab))
 
+    def test_batch_drives_firefox(self):
+        for _ in range(100):
+            if self.conn.browser.get("connected"):
+                break
+            threading.Event().wait(0.1)
+        self.assertTrue(self.conn.browser.get("connected"))
+        self.hub.bind("e2e", "d_e2e", ROOT)
+        page = self.tool("browser_navigate", "browser:visit:127.0.0.1", url=FORM + "/two")
+        self.batch_flow(page["tab_id"])
+        self.tool("browser_tabs", action="close", tab_id=page["tab_id"])
+
+    def batch_flow(self, tab: int):
+        """One browser_batch fills a two-field form, picks an option and presses Enter: one call,
+        one approval for the submit, one page read."""
+        self.tool("browser_navigate", None, tab_id=tab, url=FORM + "/two")
+        snap = self.tool("browser_snapshot", tab_id=tab, interactive_only=True)["snapshot"]
+        first, last = self.ref(snap, 'textbox "First name"'), self.ref(snap, 'textbox "Last name"')
+        steps = [{"action": "type", "ref": first, "text": "Ada"},
+                 {"action": "type", "ref": last, "text": "Lovelace"},
+                 {"action": "select", "name": "Color", "value": "Green"},
+                 {"action": "press", "key": "Enter", "ref": last},
+                 {"action": "wait_for", "text": "saved:"}]
+        out = self.tool("browser_batch", "browser:submit:127.0.0.1", tab_id=tab, steps=steps, snapshot="text")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["completed"], 5)
+        self.assertEqual(len(out["steps"]), 5)
+        self.assertIn("saved: Ada Lovelace g", out["page"]["text"])
+        self.assertNotIn("Ada", " ".join(out["steps"]), "typed text is not repeated in the step lines")
+        # Without the approval the extension still refuses the submit.
+        self.tool("browser_navigate", None, tab_id=tab, url=FORM + "/two")
+        snap = self.tool("browser_snapshot", tab_id=tab, interactive_only=True)["snapshot"]
+        steps = [{"action": "type", "ref": self.ref(snap, 'textbox "First name"'), "text": "Bob"},
+                 {"action": "press", "key": "Enter"}]
+        failed = json.loads(self.registry.dispatch("browser_batch", {"tab_id": tab, "steps": steps}, task_id="t",
+                                                   session_id="e2e"))
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["failed"]["step"], 2)
+
     def listed(self) -> dict[int, dict]:
         return {t["tab_id"]: t for t in self.tool("browser_tabs", action="list")["tabs"]}
 

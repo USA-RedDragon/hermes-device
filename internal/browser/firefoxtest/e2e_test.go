@@ -404,6 +404,14 @@ func formPage(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/done":
 		_, _ = fmt.Fprintf(w, "<title>done</title><p>got: %s</p>", html.EscapeString(r.URL.Query().Get("q")))
+	case "/two":
+		_, _ = io.WriteString(w, `<title>two</title><form action="/done2"><label for="a">First name</label><input id="a" name="a">`+
+			`<label for="b">Last name</label><input id="b" name="b"><label for="c">Color</label>`+
+			`<select id="c" name="c"><option value="r">Red</option><option value="g">Green</option></select><button>Save</button></form>`)
+	case "/done2":
+		q := r.URL.Query()
+		_, _ = fmt.Fprintf(w, "<title>saved</title><p>saved: %s %s %s</p>", html.EscapeString(q.Get("a")),
+			html.EscapeString(q.Get("b")), html.EscapeString(q.Get("c")))
 	case "/tricks":
 		_, _ = io.WriteString(w, `<title>tricks</title><form id="f" action="/done"><input name="q" value="x"></form>`+
 			`<a href="#"><button form="f">Inside</button></a><button form="f">Outside</button>`)
