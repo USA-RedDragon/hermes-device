@@ -1,0 +1,12 @@
+# New: a clarify answer is the user's statement in the provenance review
+tests/tools/test_smart_provenance_clarify.py
+# The provenance review it changes, the clarify paths it reads, and the approval paths that show its card
+tests/tools/test_smart_provenance.py
+tests/tools/test_smart_provenance_local_judge.py
+tests/tools/test_smart_provenance_live_root.py
+tests/tools/test_smart_provenance_chat_grants.py
+tests/tools/test_smart_provenance_judge_retry.py
+tests/tools/test_approval_provenance.py
+tests/tools/test_smart_approval_false_positives.py
+tests/tools/test_subagent_approval_routing.py
+tests/gateway/test_shared_clarify.py
