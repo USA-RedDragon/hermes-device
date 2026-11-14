@@ -945,7 +945,7 @@ def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict
                               f"without asking. Script:\n{shown}"}
 
 
-def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]:
+def decide(tool_name: str, args: dict, conn: Any, inspected: Optional[dict] = None) -> tuple[dict, Optional[dict]]:
     """What a browser call needs: ``(grant, approval)``. ``grant`` goes to the handler (and
     from there to the extension as its guard); ``approval`` is the pre_tool_call approve
     request (or a block), or None when nothing needs the approval gate."""
@@ -996,7 +996,7 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
         req["ref"] = ref
     else:
         req["focus"] = True
-    info = inspect_in_hook(conn, req)
+    info = inspected if inspected is not None else inspect_in_hook(conn, req)
     if not isinstance(info, dict) or info.get("error"):
         return {}, None
     page = site_of(info.get("host") or "")
@@ -1055,11 +1055,15 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
     return grant, None
 
 
-GATED = frozenset({"browser_navigate", "browser_tabs", "browser_click", "browser_type", "browser_press",
+GATED = frozenset({"browser_batch", "browser_navigate", "browser_tabs", "browser_click", "browser_type", "browser_press",
                    "browser_eval", "browser_login"})
 
 
 SCHEDULE_TOOLS = frozenset({"cronjob_manage", "browser_use_device"})
+
+
+def _batch():
+    return _core()._load_sibling("hermes_device_batch", "batch.py")
 
 
 def _jobs():
@@ -1111,7 +1115,10 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], session_id: str) -> Opt
     _take_grant(key)
     core = _core()
     try:
-        grant, approval = decide(tool_name, args, conn)
+        if tool_name == "browser_batch":
+            grant, approval = _batch().plan(sys.modules[__name__], args, conn)
+        else:
+            grant, approval = decide(tool_name, args, conn)
     except core.BrowserError as exc:
         _core().logger.info("device-browser: inspect before %s failed: %s", tool_name, exc)
         return None
@@ -1387,7 +1394,7 @@ def _resize(path: Path, mime: str) -> str:
 # --- handlers ----------------------------------------------------------------------------------
 
 # Tools whose tab_id defaults to the agent tab this session used last.
-DEFAULT_TAB_TOOLS = frozenset({"browser_back", "browser_snapshot", "browser_click", "browser_type", "browser_press",
+DEFAULT_TAB_TOOLS = frozenset({"browser_batch", "browser_back", "browser_snapshot", "browser_click", "browser_type", "browser_press",
                                "browser_hover", "browser_scroll", "browser_eval", "browser_vision",
                                "browser_screenshot"})
 _LAST_TAB: dict[str, tuple[str, int]] = {}
@@ -1467,7 +1474,7 @@ def _fail(tool: str, message: str, code: str, tab: Optional[int]) -> str:
 
 
 # Tools after which a cached outline of their tab is no longer the page.
-_CHANGES_PAGE = frozenset({"browser_tabs", "browser_navigate", "browser_back", "browser_click", "browser_type",
+_CHANGES_PAGE = frozenset({"browser_batch", "browser_tabs", "browser_navigate", "browser_back", "browser_click", "browser_type",
                            "browser_press", "browser_hover", "browser_scroll", "browser_eval", "browser_login"})
 
 
@@ -2015,6 +2022,7 @@ def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int, sid: str) 
              "snapshot": str(snap.get("snapshot") or ""), "element_count": snap.get("element_count", 0)}
     if snap.get("scope"):
         entry["matched"] = snap.get("matched", 0)
+    _batch().remember(conn.device_id, tab, entry["url"], entry["snapshot"], scoped=bool(selector or ref))
     with _SNAPS_LOCK:
         _SNAPS.pop((conn.device_id, tab), None)
         _SNAPS[(conn.device_id, tab)] = entry
@@ -2077,6 +2085,28 @@ def _snapshot(args: dict, conn: Any, sid: str) -> str:
     if hints:
         out["hint"] = " ".join(hints)
     return _ok(_untrusted(out))
+
+
+def act_req(op: str, a: dict) -> dict:
+    """The device request of click, type or press, without its guard."""
+    req: dict = {"tab_id": a["tab_id"]}
+    if op == "press":
+        req["key"] = str(a.get("key") or "")
+    if a.get("ref"):
+        req["ref"] = a["ref"]
+    if op == "type":
+        req["text"] = str(a.get("text") or "")
+        req["submit"] = bool(a.get("submit"))
+    return req
+
+
+def guard_of(grant: dict) -> dict:
+    return {"submit_hosts": grant.get("submit_hosts") or [], "visit_hosts": grant.get("visit_hosts") or [],
+            "sensitive": bool(grant.get("confirm")), "confirmed": bool(grant.get("protected_ok"))}
+
+
+def _batch_tool(args: dict, conn: Any, sid: str) -> str:
+    return _batch().run(sys.modules[__name__], args, conn, sid)
 
 
 def _act(op: str) -> Callable[[dict, Any, str], str]:
@@ -2249,7 +2279,38 @@ def _schema(name: str, description: str, props: dict, required: list[str]) -> di
             "parameters": {"type": "object", "properties": props, "required": required}}
 
 
+_BATCH_STEP = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["click", "type", "press", "select", "hover", "scroll", "wait_for", "navigate"]},
+        "ref": {"type": "string", "description": "Ref, or give name"},
+        "name": {"type": "string", "description": "Element label"},
+        "role": {"type": "string"},
+        "text": {"type": "string", "description": "type, wait_for"},
+        "submit": {"type": "boolean"},
+        "value": {"type": "string", "description": "select"},
+        "key": {"type": "string", "description": "press"},
+        "direction": {"type": "string"},
+        "to_text": {"type": "string"},
+        "selector": {"type": "string", "description": "wait_for"},
+        "url": {"type": "string"},
+    },
+    "required": ["action"],
+}
+
 SCHEMAS = {
+    "browser_batch": _schema(
+        "browser_batch", "PREFER THIS when you know the steps: run click, type, press, select, hover, scroll, "
+        "wait_for and navigate steps in one call, then read the page once. Refs survive re-renders; name (and role) "
+        "works without a ref. Stops at the first failure unless stop_on_error is false. One approval for the batch. "
+        "Use single tools to explore. Example: {\"steps\": [{\"action\": \"type\", \"ref\": \"e1\", "
+        "\"text\": \"alice\"}, {\"action\": \"press\", \"key\": \"Enter\"}]}",
+        {"tab_id": _TAB,
+         "steps": {"type": "array", "items": _BATCH_STEP, "description": "Up to 25, run in order"},
+         "stop_on_error": {"type": "boolean", "description": "Default true"},
+         "snapshot": {"type": "string", "enum": ["interactive", "outline", "text", "both", "none"],
+                      "description": "Final read (default interactive)"},
+         "wait_for": {"type": "string", "description": "Text to wait for before the final read"}}, ["steps"]),
     "browser_status": _schema(
         "browser_status", "Show whether this chat can use the user's Firefox, on which computer, and the agent's "
         "tabs. Example: {}", {}, []),
@@ -2279,6 +2340,7 @@ SCHEMAS = {
     "browser_back": _schema("browser_back", "Go back one page. Example: {\"tab_id\": 12}", {"tab_id": _TAB}, []),
     "browser_snapshot": _schema(
         "browser_snapshot", "Read a tab as an outline with refs (e1, f1e3) for click, type, press, hover and scroll. "
+        "Use it to explore; once you know the steps, run them with one browser_batch. "
         "Includes frames and shadow DOM. Long results are cut at max_chars; read on with offset. Limit it to part of "
         "the page with selector or ref. Untrusted content. Example: {\"tab_id\": 12, \"selector\": \"form\"}",
         {"tab_id": _TAB,
@@ -2359,6 +2421,7 @@ SCHEMAS = {
 }
 
 HANDLERS = {
+    "browser_batch": _tool(_batch_tool, "browser_batch"),
     "browser_status": browser_status,
     "browser_use_device": browser_use_device,
     "browser_tabs": _tool(_tabs, "browser_tabs"),
