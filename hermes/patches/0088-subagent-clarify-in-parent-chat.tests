@@ -1,0 +1,17 @@
+# Upstream tests of the clarify wait and its cards, the delegation code that builds a child, and the viewer's controls
+tests/tools/test_clarify_gateway.py
+tests/tools/test_clarify_tool.py
+tests/tools/test_delegate.py
+tests/tools/test_delegate_composite_toolsets.py
+tests/tools/test_delegate_capability_inheritance.py
+tests/tools/test_delegate_gateway_inline.py
+tests/gateway/test_clarify_active_session_bypass.py
+tests/gateway/test_clarify_card_retire_on_timeout.py
+tests/gateway/test_clarify_delivery_fallback.py
+tests/gateway/test_steer_releases_pending_clarify.py
+tests/gateway/test_telegram_clarify_buttons.py
+tests/gateway/test_clarify_thread_followup_not_swallowed.py
+tests/gateway/test_clarify_lock_owner.py
+tests/gateway/test_local_viewer_events_turn.py
+tests/gateway/test_authority_approval_projection.py
+tests/gateway/test_authority_active_list.py
