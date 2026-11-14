@@ -1370,7 +1370,7 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 	}
 	s := g.sessions[str(p, kSessionID)]
 	if g.StaleApprovals {
-		return nil, "stale_generation", nil
+		return nil, gateway.ReasonStaleGeneration, nil
 	}
 	pr, ok := s.prompts[str(p, "prompt_id")]
 	if !ok {
