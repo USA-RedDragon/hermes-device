@@ -54,6 +54,11 @@ const (
 	// MaxFromTree: a higher one could never apply.
 	MaxPartnerHop  = 30
 	MaxPartnerPair = 20
+	// MaxTreeHop replaces MaxHop for two agents of one delegation tree (a
+	// chat and its subagents, in either direction, and siblings). Their
+	// messages do not count toward the pair, tree and backend limits, and
+	// do not use up the tree's budget for messages that leave it.
+	MaxTreeHop = 100
 )
 
 const partnerHint = " If these chats work together, the user can mark these chats as working together to raise the limit"
@@ -761,25 +766,31 @@ func (r *Router) send(ctx context.Context, b config.Backend, p Plugin, c device.
 		return nil, err
 	}
 	maxPair, maxHop, hint := MaxPair, MaxHop, ""
-	if partner {
+	sameTree := inTreeSession(c, t.session)
+	switch {
+	case sameTree:
+		maxHop = MaxTreeHop
+	case partner:
 		maxPair, maxHop = MaxPartnerPair, MaxPartnerHop
-	} else if !inTreeSession(c, t.session) {
+	default:
 		hint = partnerHint
 	}
-	counts, err := r.opts.Store.AgentCounts(ctx, b.ID, c.RootSessionID, t.session, now.Add(-ShortWindow), now.Add(-LongWindow))
-	if err != nil {
-		return nil, err
-	}
-	switch {
-	case counts.Pair >= maxPair:
-		return nil, refuse("rate_limited", "you sent %s %d messages in the last %s; wait, or let the user decide.%s",
-			t.label, counts.Pair, ShortWindow, hint)
-	case counts.FromRoot >= MaxFromTree:
-		return nil, refuse("rate_limited", "your chat and its subagents sent %d messages in the last %s; wait, "+
-			"or let the user decide", counts.FromRoot, ShortWindow)
-	case counts.Backend >= MaxBackend:
-		return nil, refuse("rate_limited", "the user's agents sent %d messages in the last %s, the most allowed",
-			counts.Backend, LongWindow)
+	if !sameTree {
+		counts, err := r.opts.Store.AgentCounts(ctx, b.ID, c.RootSessionID, t.session, now.Add(-ShortWindow), now.Add(-LongWindow))
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case counts.Pair >= maxPair:
+			return nil, refuse("rate_limited", "you sent %s %d messages in the last %s; wait, or let the user decide.%s",
+				t.label, counts.Pair, ShortWindow, hint)
+		case counts.FromRoot >= MaxFromTree:
+			return nil, refuse("rate_limited", "your chat and its subagents sent %d messages in the last %s; wait, "+
+				"or let the user decide", counts.FromRoot, ShortWindow)
+		case counts.Backend >= MaxBackend:
+			return nil, refuse("rate_limited", "the user's agents sent %d messages in the last %s, the most allowed",
+				counts.Backend, LongWindow)
+		}
 	}
 	hop, err := r.hop(ctx, b, c, t, a.ReplyTo, now)
 	if err != nil {
@@ -795,7 +806,7 @@ func (r *Router) send(ctx context.Context, b config.Backend, p Plugin, c device.
 	}
 	m := hub.AgentMessage{ID: newID(), BackendID: b.ID, FromSession: c.SessionID, FromRoot: c.RootSessionID,
 		FromSubagent: c.SubagentID, FromName: fromName, ToSession: t.session, ToSubagent: t.subagent,
-		ToName: t.label, ReplyTo: a.ReplyTo, Hop: hop, Mode: t.mode, Status: hub.AgentStatusSending, CreatedAt: now}
+		ToName: t.label, ReplyTo: a.ReplyTo, Hop: hop, InTree: sameTree, Mode: t.mode, Status: hub.AgentStatusSending, CreatedAt: now}
 	m.Text = Format(m.ID, from, replyHint(c, t), t.mode == hub.AgentModeSteer, a.Text)
 	if err := r.opts.Store.AddAgentMessage(ctx, m); err != nil {
 		return nil, err

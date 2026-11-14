@@ -38,8 +38,11 @@ type AgentMessage struct {
 	Text string
 	// Mode is how the hub delivered it: AgentModeInput, AgentModeInbox or
 	// AgentModeSteer.
-	Mode      string
-	Status    string
+	Mode   string
+	Status string
+	// InTree is true when sender and target were in one delegation tree.
+	// Such a message does not count toward the rate limits.
+	InTree    bool
 	CreatedAt time.Time
 }
 
@@ -80,6 +83,7 @@ type AgentCounts struct {
 	// FromRoot is the messages of the sender's whole tree since the
 	// short window began, Pair those from the sender's tree to the target,
 	// Backend all the backend's messages since the long window began.
+	// Messages inside one delegation tree (InTree) are not counted.
 	FromRoot, Pair, Backend int
 }
 

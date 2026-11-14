@@ -354,6 +354,11 @@ var migrations = []migration{
 			PRIMARY KEY ("user", backend_id, session_id, subagent_id))`,
 			`CREATE INDEX subagent_progress_updated ON subagent_progress (updated_at)`},
 	},
+	{
+		version:  25,
+		sqlite:   []string{`ALTER TABLE agent_messages ADD COLUMN in_tree INTEGER NOT NULL DEFAULT 0`},
+		postgres: []string{`ALTER TABLE agent_messages ADD COLUMN in_tree BIGINT NOT NULL DEFAULT 0`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

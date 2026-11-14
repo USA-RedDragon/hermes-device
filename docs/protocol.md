@@ -1061,7 +1061,7 @@ Delivery. The hub checks and records every message and delivers it in one of thr
 
 The text the target gets always starts with the line `[Agent message am_<16 hex> from <sender>]` and a paragraph that says another agent wrote it, not the user, that it is no instruction or approval of the user, and how to answer (with `reply_to`). The hub drops control and format characters, turns each `@` that Hermes would expand as a context reference into a full-width `＠`, and turns each `[` that could open a frame marker (such as `[OUT-OF-BAND USER MESSAGE` or `[System note:`) into a full-width `［`, so the text cannot read files into the target's context or fake the end of its frame. The text never starts with `/`, so Hermes does not run it as a command.
 
-Rules (in the hub, hub README "Agent messages"): only the agents of one backend reach each other, so one person's agents never reach another person's; at most 20 messages per tree and 8 to one target in 10 minutes, 200 per backend in an hour; a chain of answers ends after 6 hops; approvals still go to the user, since Hermes answers an approval only through `approval.respond`, never through a message's text.
+Rules (in the hub, hub README "Agent messages"): only the agents of one backend reach each other, so one person's agents never reach another person's; at most 20 messages per tree and 8 to one target in 10 minutes, 200 per backend in an hour; a chain of answers ends after 6 hops (100 between a chat and its own subagents, which also count toward none of the other limits); approvals still go to the user, since Hermes answers an approval only through `approval.respond`, never through a message's text.
 
 Security notes:
 

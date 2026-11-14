@@ -17,17 +17,21 @@ var _ hub.AgentStore = (*Store)(nil)
 const agentMessageTTL = 30 * 24 * time.Hour
 
 const agentColumns = `id, backend_id, from_session, from_root, from_subagent, from_name, to_session, to_subagent,
-	to_name, reply_to, hop, text, mode, status, created_at`
+	to_name, reply_to, hop, text, mode, status, in_tree, created_at`
 
 // AddAgentMessage records a message, and drops those older than 30 days.
 func (s *Store) AddAgentMessage(ctx context.Context, m hub.AgentMessage) error {
+	inTree := 0
+	if m.InTree {
+		inTree = 1
+	}
 	if err := s.exec(ctx, `DELETE FROM agent_messages WHERE created_at < ?`,
 		s.now().Add(-agentMessageTTL).UnixMilli()); err != nil {
 		return err
 	}
-	return s.exec(ctx, `INSERT INTO agent_messages (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	return s.exec(ctx, `INSERT INTO agent_messages (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.BackendID, m.FromSession, m.FromRoot, m.FromSubagent, m.FromName, m.ToSession, m.ToSubagent,
-		m.ToName, m.ReplyTo, m.Hop, m.Text, m.Mode, m.Status, m.CreatedAt.UnixMilli())
+		m.ToName, m.ReplyTo, m.Hop, m.Text, m.Mode, m.Status, inTree, m.CreatedAt.UnixMilli())
 }
 
 // SetAgentMessageStatus records how a message was delivered.
@@ -37,15 +41,16 @@ func (s *Store) SetAgentMessageStatus(ctx context.Context, id, mode, status stri
 
 func scanAgentMessage(r *sql.Row) (hub.AgentMessage, bool, error) {
 	var m hub.AgentMessage
-	var at int64
+	var at, inTree int64
 	err := r.Scan(&m.ID, &m.BackendID, &m.FromSession, &m.FromRoot, &m.FromSubagent, &m.FromName, &m.ToSession,
-		&m.ToSubagent, &m.ToName, &m.ReplyTo, &m.Hop, &m.Text, &m.Mode, &m.Status, &at)
+		&m.ToSubagent, &m.ToName, &m.ReplyTo, &m.Hop, &m.Text, &m.Mode, &m.Status, &inTree, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return hub.AgentMessage{}, false, nil
 	}
 	if err != nil {
 		return hub.AgentMessage{}, false, err
 	}
+	m.InTree = inTree != 0
 	m.CreatedAt = time.UnixMilli(at)
 	return m, true, nil
 }
@@ -78,14 +83,15 @@ func (s *Store) LastAgentOut(ctx context.Context, backendID, fromRoot, toSession
 		backendID, since.UnixMilli(), fromRoot, toSession))
 }
 
-// AgentCounts counts the recent messages that limit a send.
+// AgentCounts counts the recent messages that limit a send. Messages
+// inside one delegation tree are not counted.
 func (s *Store) AgentCounts(ctx context.Context, backendID, fromRoot, toSession string, short, long time.Time) (hub.AgentCounts, error) {
 	var c hub.AgentCounts
 	err := s.row(ctx, `SELECT
 		COALESCE(SUM(CASE WHEN from_root = ? AND created_at >= ? THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN from_root = ? AND to_session = ? AND created_at >= ? THEN 1 ELSE 0 END), 0),
 		COUNT(*)
-		FROM agent_messages WHERE backend_id = ? AND created_at >= ?`,
+		FROM agent_messages WHERE backend_id = ? AND created_at >= ? AND in_tree = 0`,
 		fromRoot, short.UnixMilli(), fromRoot, toSession, short.UnixMilli(), backendID, long.UnixMilli()).
 		Scan(&c.FromRoot, &c.Pair, &c.Backend)
 	if err != nil {

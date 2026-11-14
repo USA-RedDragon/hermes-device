@@ -858,3 +858,73 @@ func TestSendToParentChatByIDNamesItOnce(t *testing.T) {
 		t.Fatalf("to = %q", to)
 	}
 }
+
+func siblingCaller() device.AgentCaller {
+	c := subagentCaller()
+	c.SessionID, c.SubagentID = "c2", saB
+	return c
+}
+
+func parentWithTree() device.AgentCaller {
+	c := chat("s1")
+	c.Tree = subagentCaller().Tree
+	return c
+}
+
+// chainInTree alternates messages between a and b, each answering the last.
+func chainInTree(t *testing.T, a, b device.AgentCaller, toA, toB string) {
+	t.Helper()
+	e := newEnv(t)
+	from, to, dest := a, b, toB
+	for i := 1; i <= agents.MaxTreeHop; i++ {
+		hop, _, ans := e.sendHop(from, dest, nil)
+		if ans.code != "" || hop != i {
+			t.Fatalf("message %d: hop %d code %q %s", i, hop, ans.code, ans.msg)
+		}
+		e.now = e.now.Add(time.Second)
+		from, to = to, from
+		if dest == toB {
+			dest = toA
+		} else {
+			dest = toB
+		}
+	}
+	ans := e.do("send", from, map[string]string{"to": dest, keyText: keyPing})
+	if ans.code != codeHops || !strings.Contains(ans.msg, "gone back and forth 100 times, the most allowed") {
+		t.Fatalf("message %d: code %q %s, want too_many_hops", agents.MaxTreeHop+1, ans.code, ans.msg)
+	}
+}
+
+func TestTreeParentChildChainReaches100(t *testing.T) {
+	t.Parallel()
+	chainInTree(t, parentWithTree(), subagentCaller(), parent, saA)
+}
+
+func TestTreeSiblingChainReaches100(t *testing.T) {
+	t.Parallel()
+	chainInTree(t, subagentCaller(), siblingCaller(), saA, saB)
+}
+
+func TestTreeTrafficDoesNotUseCrossTreeBudget(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	for i := range 3 * agents.MaxFromTree {
+		from, to := subagentCaller(), parent
+		if i%2 == 1 {
+			from, to = parentWithTree(), saA
+		}
+		if a := e.do("send", from, map[string]string{"to": to, keyText: keyPing}); a.code != "" {
+			t.Fatalf("in-tree message %d: %s", i, a.msg)
+		}
+		e.now = e.now.Add(time.Second)
+	}
+	// The full cross-tree budget is still there, and still ends at MaxPair.
+	for i := range agents.MaxPair {
+		if a := e.do("send", parentWithTree(), map[string]string{"to": "s2", keyText: fmt.Sprint("x", i)}); a.code != "" {
+			t.Fatalf("cross-tree message %d: %s", i, a.msg)
+		}
+	}
+	if a := e.do("send", parentWithTree(), map[string]string{"to": "s2", keyText: "x"}); a.code != codeRate {
+		t.Fatalf("code %q, want rate_limited", a.code)
+	}
+}
