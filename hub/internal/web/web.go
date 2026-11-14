@@ -129,6 +129,7 @@ type Options struct {
 
 // Server is the web front end.
 type Server struct {
+	last         lastAnswers
 	svc          hub.Service
 	links        hub.Links
 	tokens       hub.TokenStore
@@ -444,10 +445,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/sessions/{backend}/{session}/page-info", s.api(s.handlePageInfo))
 	mux.Handle("POST /api/sessions/{backend}/{session}/model", s.api(s.handleSetModel))
 	mux.Handle("POST /api/sessions/{backend}/{session}/reasoning", s.api(s.handleSetReasoning))
-	mux.Handle("GET /api/sessions/{backend}/{session}/place", s.api(s.handlePlace))
+	mux.Handle("GET /api/sessions/{backend}/{session}/place", s.api(s.lastAnswer(s.handlePlace)))
 	mux.Handle("POST /api/sessions/{backend}/{session}/move", s.api(s.handleMove))
 	mux.Handle("POST /api/sessions/{backend}/{session}/release", s.api(s.handleRelease))
-	mux.Handle("GET /api/sessions/{backend}/{session}/activity", s.api(s.handleActivity))
+	mux.Handle("GET /api/sessions/{backend}/{session}/activity", s.api(s.lastAnswer(s.handleActivity)))
 	mux.Handle("GET /api/sessions/{backend}/{session}/subagents/{subagent}/tail", s.api(s.handleSubagentTail))
 	mux.Handle("GET /api/sessions/{backend}/{session}/subagents/{subagent}/events", s.api(s.handleSubagentEvents))
 	mux.Handle("POST /api/sessions/{backend}/{session}/subagents/{subagent}/steer", s.api(s.handleSteerSubagent))
@@ -460,7 +461,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/background", s.api(s.handleBackground))
 	mux.Handle("GET /api/sessions/{backend}/{session}/background-tokens", s.api(s.handleBackgroundTokens))
 	mux.Handle("POST /api/places", s.api(s.handlePlaces))
-	mux.Handle("GET /api/computers", s.api(s.handleComputers))
+	mux.Handle("GET /api/computers", s.api(s.lastAnswer(s.handleComputers)))
 	mux.Handle("GET /api/computers/{device}/folders", s.api(s.handleFolders))
 	s.memoryRoutes(mux)
 	s.modelRoutes(mux)
@@ -564,6 +565,11 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 				errorJSON(w, http.StatusForbidden, "bad CSRF token")
 				return
 			}
+		}
+		if r.Method != http.MethodGet {
+			// A change is shown by the next read, not hidden by a kept answer.
+			s.last.forget(sess.User)
+			defer s.last.forget(sess.User)
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), userKey{}, sess.User)))
 	})

@@ -11,7 +11,7 @@ import (
 // the changes need the CSRF token and a same-origin request.
 func (s *Server) scheduledRoutes(mux *http.ServeMux) {
 	const base = "/api/scheduled/{backend}"
-	mux.Handle("GET /api/scheduled", s.api(s.handleJobs))
+	mux.Handle("GET /api/scheduled", s.api(s.lastAnswer(s.handleJobs)))
 	mux.Handle("GET "+base+"/options", s.api(s.handleJobOptions))
 	mux.Handle("POST "+base+"/preview", s.api(s.handlePreviewSchedule))
 	mux.Handle("DELETE "+base+"/drafts/{draft}", s.api(s.handleDiscardDraft))

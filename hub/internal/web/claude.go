@@ -19,13 +19,13 @@ type claudeAdmin interface {
 // the CSRF token and a same-origin request.
 func (s *Server) claudeRoutes(mux *http.ServeMux) {
 	const base = "/api/claude/{backend}/accounts"
-	mux.Handle("GET "+base, s.api(s.handleClaudeAccounts))
+	mux.Handle("GET "+base, s.api(s.lastAnswer(s.handleClaudeAccounts)))
 	mux.Handle("GET "+base+"/{account}/usage", s.api(s.handleClaudeUsage))
 	mux.Handle("POST "+base+"/{account}/signin", s.api(s.handleClaudeSignIn))
 	mux.Handle("GET "+base+"/{account}/signin", s.api(s.handleClaudeSignIn))
 	mux.Handle("DELETE "+base+"/{account}/signin", s.api(s.handleClaudeSignIn))
 	mux.Handle("POST "+base+"/{account}/signin/code", s.api(s.handleClaudeCode))
-	mux.Handle("GET /api/claude/{backend}/pool", s.api(s.handleClaudePool))
+	mux.Handle("GET /api/claude/{backend}/pool", s.api(s.lastAnswer(s.handleClaudePool)))
 	mux.Handle("GET /api/backends/{backend}/models", s.api(s.handleNewChatModels))
 }
 
