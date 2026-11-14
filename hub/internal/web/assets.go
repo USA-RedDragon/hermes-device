@@ -26,14 +26,13 @@ type assets struct {
 func newAssets(fsys fs.FS) *assets {
 	a := &assets{fsys: fsys, hashes: map[string]string{}}
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+		if err == nil && !d.IsDir() {
+			if b, err := fs.ReadFile(fsys, p); err == nil {
+				sum := sha256.Sum256(b)
+				a.hashes[p] = hex.EncodeToString(sum[:8])
+			}
 		}
-		if b, err := fs.ReadFile(fsys, p); err == nil {
-			sum := sha256.Sum256(b)
-			a.hashes[p] = hex.EncodeToString(sum[:8])
-		}
-		return nil
+		return err
 	})
 	return a
 }

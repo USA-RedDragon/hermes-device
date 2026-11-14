@@ -27,7 +27,13 @@ const (
 
 // keepWhole are the tools whose rows a card reads in full: a page card
 // needs the path, a screenshot card the file.
-var keepWhole = map[string]bool{"page_publish": true, hub.ScreenshotTool: true, "browser_vision": true, "vision_analyze": true}
+func keepWhole(tool string) bool {
+	switch tool {
+	case "page_publish", hub.ScreenshotTool, "browser_vision", "vision_analyze":
+		return true
+	}
+	return false
+}
 
 // cutText cuts s to n bytes at a character boundary.
 func cutText(s string, n int) string {
@@ -69,7 +75,7 @@ func cutOutput(s string) string {
 			var buf bytes.Buffer
 			enc := json.NewEncoder(&buf)
 			enc.SetEscapeHTML(false)
-			if enc.Encode(cutValue(v)) == nil {
+			if enc.Encode(cutValue(v)) == nil { //nolint:errchkjson // v came from decoding JSON
 				return string(bytes.TrimRight(buf.Bytes(), "\n"))
 			}
 		}
@@ -94,7 +100,7 @@ func trimRow(raw json.RawMessage) json.RawMessage {
 	}
 	_ = json.Unmarshal(m["name"], &name)
 	_ = json.Unmarshal(m["tool_name"], &tool)
-	if keepWhole[name] || keepWhole[tool] {
+	if keepWhole(name) || keepWhole(tool) {
 		return raw
 	}
 	size, lines := 0, 0
@@ -182,5 +188,5 @@ func (s *Server) handleToolOutput(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, max-age=300")
-	_, _ = w.Write(out)
+	_, _ = w.Write(out) //nolint:gosec // JSON from the gateway, served as application/json
 }

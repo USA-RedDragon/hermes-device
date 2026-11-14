@@ -35,11 +35,11 @@ func TestSessionsListETag(t *testing.T) {
 	if first.StatusCode != http.StatusOK || tag == "" || strings.Contains(first.Header.Get("Cache-Control"), "no-store") {
 		t.Fatalf("first = %d etag %q cache %q", first.StatusCode, tag, first.Header.Get("Cache-Control"))
 	}
-	if again := getWith(t, c, e.url+"/api/sessions", map[string]string{"If-None-Match": tag}); again.StatusCode != http.StatusNotModified {
+	if again := getWith(t, c, e.url+"/api/sessions", map[string]string{ifNoneMatch: tag}); again.StatusCode != http.StatusNotModified {
 		t.Fatalf("same list = %d, want 304", again.StatusCode)
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "newer", Title: "Newer", Live: true, StartedAt: 500})
-	if changed := getWith(t, c, e.url+"/api/sessions", map[string]string{"If-None-Match": tag}); changed.StatusCode != http.StatusOK || changed.Header.Get("ETag") == tag {
+	if changed := getWith(t, c, e.url+"/api/sessions", map[string]string{ifNoneMatch: tag}); changed.StatusCode != http.StatusOK || changed.Header.Get("ETag") == tag {
 		t.Fatalf("changed list = %d etag %q", changed.StatusCode, changed.Header.Get("ETag"))
 	}
 }
@@ -67,14 +67,14 @@ func TestStaticAssetsAreVersioned(t *testing.T) {
 	if cc := plain.Header.Get("Cache-Control"); strings.Contains(cc, "immutable") || plain.Header.Get("ETag") == "" {
 		t.Fatalf("unversioned = %q etag %q", cc, plain.Header.Get("ETag"))
 	}
-	if r := getWith(t, c, e.url+"/static/app.js", map[string]string{"If-None-Match": plain.Header.Get("ETag")}); r.StatusCode != http.StatusNotModified {
+	if r := getWith(t, c, e.url+"/static/app.js", map[string]string{ifNoneMatch: plain.Header.Get("ETag")}); r.StatusCode != http.StatusNotModified {
 		t.Fatalf("revalidated = %d", r.StatusCode)
 	}
 	if r := getWith(t, c, e.url+"/static/app.js?v=0000", nil); strings.Contains(r.Header.Get("Cache-Control"), "immutable") {
 		t.Fatal("a wrong version is kept for a year")
 	}
 	idx := getWith(t, c, e.url+"/", nil)
-	if r := getWith(t, c, e.url+"/", map[string]string{"If-None-Match": idx.Header.Get("ETag")}); idx.Header.Get("ETag") == "" || r.StatusCode != http.StatusNotModified {
+	if r := getWith(t, c, e.url+"/", map[string]string{ifNoneMatch: idx.Header.Get("ETag")}); idx.Header.Get("ETag") == "" || r.StatusCode != http.StatusNotModified {
 		t.Fatalf("index revalidation = %d", r.StatusCode)
 	}
 }
@@ -101,3 +101,5 @@ func TestStreamPushesListChanges(t *testing.T) {
 		t.Fatal("no sessions.changed after the list changed")
 	}
 }
+
+const ifNoneMatch = "If-None-Match"

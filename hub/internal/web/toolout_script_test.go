@@ -25,15 +25,15 @@ func TestToolOutputLoadsWhenACardOpens(t *testing.T) {
 	// The card shows at most 20,000 characters, so the line is early.
 	whole := strings.Repeat("line of build output\n", 400) + tail + "\n" + strings.Repeat("line of build output\n", 2600)
 	call := func(id string) map[string]any {
-		return map[string]any{"id": id, "function": map[string]any{"name": "terminal", "arguments": `{"command":"make"}`}}
+		return map[string]any{"id": id, fnKey: map[string]any{fieldName: toolTerminal, ilArgs: `{"command":"make"}`}}
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "s8", Title: "Cut", Live: true, StartedAt: 800, Messages: []map[string]any{
 		{kRole: roleUser, kText: "build it"},
-		{kRole: roleAssistant, kText: "", "tool_calls": []any{call("a1"), call("a2"), call("a3")}},
-		{kRole: "tool", "tool_call_id": "a1", "name": "terminal", kText: `{"output": ` + mustJSON(t, whole) + `, "exit_code": 0}`},
-		{kRole: "tool", "tool_call_id": "a2", "name": "terminal", kText: `{"output": "ok", "exit_code": 0}`},
-		{kRole: "tool", "tool_call_id": "a3", "name": "terminal", kText: `{"output": ` + mustJSON(t, whole+"2") + `, "exit_code": 0}`},
-		{kRole: roleAssistant, kText: "done"},
+		{kRole: roleAssistant, kText: "", kCalls: []any{call("a1"), call("a2"), call("a3")}},
+		{kRole: stepTool, kCallID: "a1", fieldName: toolTerminal, kText: `{"output": ` + mustJSON(t, whole) + `, "exit_code": 0}`},
+		{kRole: stepTool, kCallID: "a2", fieldName: toolTerminal, kText: `{"output": "ok", "exit_code": 0}`},
+		{kRole: stepTool, kCallID: "a3", fieldName: toolTerminal, kText: `{"output": ` + mustJSON(t, whole+"2") + `, "exit_code": 0}`},
+		{kRole: roleAssistant, kText: "finished"},
 	}})
 	prof, err := os.MkdirTemp("", "toolout-profile-")
 	if err != nil {

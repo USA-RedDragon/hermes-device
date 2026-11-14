@@ -45,7 +45,7 @@ func loginInfo(cfg *config.Config, mode string, trusted []netip.Prefix) map[stri
 
 // serveAuthPage sends one of the static pages of the login and setup
 // flow. They hold no data: their script asks /auth/info.
-func serveAuthPage(w http.ResponseWriter, r *http.Request, static *assets, file string) {
+func serveAuthPage(w http.ResponseWriter, _ *http.Request, static *assets, file string) {
 	page, _, err := static.page(file)
 	if err != nil {
 		http.Error(w, "missing page", http.StatusInternalServerError)

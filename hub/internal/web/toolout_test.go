@@ -4,16 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 )
 
+const titleOther = "Other"
 const toolOutBase = "/api/sessions/pc/"
 
-func toolOutURL(e *hubEnv, backend, session, query string) string {
-	return e.url + "/api/sessions/" + backend + "/" + session + "/tool-output?" + query
+func toolOutURL(e *hubEnv, backend, query string) string {
+	return e.url + "/api/sessions/" + backend + "/cut/tool-output?" + query
 }
 
 // A snapshot cuts the long text of tool rows and says how long it was; the
@@ -26,20 +28,20 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 	small := `{"output": "ok", "exit_code": 0}`
 	page := `{"ok": true, "path": "/srv/p.html", "title": "` + strings.Repeat("t", 5000) + `"}`
 	call := func(id, name string) map[string]any {
-		return map[string]any{"id": id, "function": map[string]any{"name": name, "arguments": "{}"}}
+		return map[string]any{"id": id, fnKey: map[string]any{"name": name, ilArgs: "{}"}}
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "cut", Title: "Cut", Live: true, StartedAt: 300, Messages: []map[string]any{
 		{kRole: roleUser, kText: "go"},
-		{kRole: roleAssistant, kText: "", "tool_calls": []any{call("t1", "terminal"), call("t2", "terminal"), call("t3", "page_publish")}},
-		{kRole: "tool", "tool_call_id": "t1", "name": "terminal", kText: whole},
-		{kRole: "tool", "tool_call_id": "t2", "name": "terminal", kText: small},
-		{kRole: "tool", "tool_call_id": "t3", "name": "page_publish", kText: page},
-		{kRole: roleAssistant, kText: "done"},
+		{kRole: roleAssistant, kText: "", kCalls: []any{call("t1", toolTerminal), call("t2", toolTerminal), call("t3", "page_publish")}},
+		{kRole: stepTool, kCallID: "t1", fieldName: toolTerminal, kText: whole},
+		{kRole: stepTool, kCallID: "t2", fieldName: toolTerminal, kText: small},
+		{kRole: stepTool, kCallID: "t3", "name": "page_publish", kText: page},
+		{kRole: roleAssistant, kText: "finished"},
 	}})
-	e.gw.AddSession(&gatewaytest.Session{ID: "other", Title: "Other", Live: true, StartedAt: 301, Messages: []map[string]any{
+	e.gw.AddSession(&gatewaytest.Session{ID: "elsewhere", Title: titleOther, Live: true, StartedAt: 301, Messages: []map[string]any{
 		{kRole: roleUser, kText: "go"},
-		{kRole: roleAssistant, kText: "", "tool_calls": []any{call("o1", "terminal")}},
-		{kRole: "tool", "tool_call_id": "o1", "name": "terminal", kText: "secret of the other chat"},
+		{kRole: roleAssistant, kText: "", kCalls: []any{call("o1", toolTerminal)}},
+		{kRole: stepTool, kCallID: "o1", fieldName: toolTerminal, kText: "secret of the other chat"},
 	}})
 	c := client(t)
 	login(t, e, c)
@@ -58,7 +60,7 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 	}
 	byCall := map[string]map[string]any{}
 	for _, m := range snap.Messages {
-		if id, _ := m["tool_call_id"].(string); id != "" {
+		if id, _ := m[kCallID].(string); id != "" {
 			byCall[id] = m
 		}
 	}
@@ -84,7 +86,7 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 		t.Fatal("a page_publish output was cut: its card needs the path")
 	}
 
-	resp, body := get(t, c, toolOutURL(e, "pc", "cut", "call=t1"))
+	resp, body := get(t, c, toolOutURL(e, "pc", "call=t1"))
 	var full struct {
 		Text string `json:"text"`
 	}
@@ -92,25 +94,25 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 		t.Fatalf("tool-output = %d, %d bytes of %d", resp.StatusCode, len(full.Text), len(whole))
 	}
 	if rid, ok := cut["row_id"].(float64); ok {
-		if resp, body = get(t, c, toolOutURL(e, "pc", "cut", "row="+url.QueryEscape(jsonNum(rid)))); resp.StatusCode != http.StatusOK || !strings.Contains(body, "line of build output") {
+		if resp, body = get(t, c, toolOutURL(e, "pc", "row="+url.QueryEscape(jsonNum(rid)))); resp.StatusCode != http.StatusOK || !strings.Contains(body, "line of build output") {
 			t.Fatalf("by row = %d", resp.StatusCode)
 		}
 	}
 	// Another chat's row is not found through this chat, and the other
 	// backend is refused.
-	if resp, body = get(t, c, toolOutURL(e, "pc", "cut", "call=o1")); resp.StatusCode != http.StatusNotFound || strings.Contains(body, "secret") {
+	if resp, body = get(t, c, toolOutURL(e, "pc", "call=o1")); resp.StatusCode != http.StatusNotFound || strings.Contains(body, "secret") {
 		t.Fatalf("other chat's call = %d %s", resp.StatusCode, body)
 	}
-	if resp, _ = get(t, c, toolOutURL(e, "pc", "cut", "call=t2x")); resp.StatusCode != http.StatusNotFound {
+	if resp, _ = get(t, c, toolOutURL(e, "pc", "call=t2x")); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown call = %d", resp.StatusCode)
 	}
-	if resp, _ = get(t, c, toolOutURL(e, "pc", "cut", "")); resp.StatusCode != http.StatusBadRequest {
+	if resp, _ = get(t, c, toolOutURL(e, "pc", "")); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("no name = %d", resp.StatusCode)
 	}
-	if resp, _ = get(t, c, toolOutURL(e, backendHome, "cut", "call=t1")); resp.StatusCode != http.StatusForbidden {
+	if resp, _ = get(t, c, toolOutURL(e, backendHome, "call=t1")); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("other backend = %d", resp.StatusCode)
 	}
-	if resp, _ = get(t, client(t), toolOutURL(e, "pc", "cut", "call=t1")); resp.StatusCode != http.StatusUnauthorized {
+	if resp, _ = get(t, client(t), toolOutURL(e, "pc", "call=t1")); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous = %d", resp.StatusCode)
 	}
 }
@@ -125,6 +127,5 @@ func mustJSON(t *testing.T, s string) string {
 }
 
 func jsonNum(f float64) string {
-	b, _ := json.Marshal(int64(f))
-	return string(b)
+	return strconv.FormatInt(int64(f), 10)
 }
