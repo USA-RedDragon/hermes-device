@@ -1,0 +1,668 @@
+From bd893ac96bfc63fdcabc8e7fce23b739bc8b2364 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 21:05:36 -0600
+Subject: [PATCH] feat(gateway): record all thread stacks when the event loop
+ stalls
+
+The gateway can stop answering for seconds with no trace of why. A
+watchdog thread now pings the asyncio loop every second; when a ping is
+not serviced within logging.stall_watchdog_threshold_seconds (5), it
+writes logs/stalls/stall-<UTC time>.txt: every thread's stack (file, line
+and function only, no locals or arguments), the coroutine chain of the
+task the loop is running, the live child processes by command name and
+the requests in flight per method, and later the length of the stall.
+One report per 60 s, the newest 50 kept. SIGUSR2 dumps all stacks to
+logs/stalls/sigusr2.txt. logging.stall_watchdog: false turns it off.
+---
+ gateway/run_startup.py               |   5 +
+ gateway/stall_watchdog.py            | 309 +++++++++++++++++++++++++++
+ hermes_cli/config_defaults.py        |   4 +
+ tests/gateway/test_stall_watchdog.py | 262 +++++++++++++++++++++++
+ tui_gateway/rpc_dispatch.py          |   4 +-
+ 5 files changed, 583 insertions(+), 1 deletion(-)
+ create mode 100644 gateway/stall_watchdog.py
+ create mode 100644 tests/gateway/test_stall_watchdog.py
+
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index b8c5ffd2..7fc020b1 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -768,6 +768,7 @@ class GatewayStartupMixin:
+             ("_loop_liveness_watchdog", "stop", "stop gateway loop liveness watchdog"),
+             ("_loop_floor_timer_handle", "cancel", "cancel gateway loop floor timer"),
+             ("_loop_heartbeat_task", "cancel", "cancel gateway loop heartbeat task"),
++            ("_stall_watchdog", "stop", "stop gateway stall watchdog"),
+         ):
+             guard = getattr(self, attr, None)
+             setattr(self, attr, None)
+@@ -970,6 +971,10 @@ class GatewayStartupMixin:
+             self._gateway_loop = None
+         if self._gateway_loop is not None:
+             self._start_loop_liveness_guards(self._gateway_loop)
++            with _log_suppressed(logging.DEBUG, "Failed to start gateway stall watchdog", exc_info=True):
++                if getattr(self, "_stall_watchdog", None) is None:
++                    from gateway import stall_watchdog
++                    self._stall_watchdog = stall_watchdog.start(self._gateway_loop)
+             # Loop live: the loop-liveness watchdog takes over from the startup watchdog. Disarm even
+             # when loop guards are config-disabled; only inside this branch (no live loop = stay armed).
+             with _log_suppressed(logging.DEBUG, "Startup watchdog disarm failed", exc_info=True):
+diff --git a/gateway/stall_watchdog.py b/gateway/stall_watchdog.py
+new file mode 100644
+index 00000000..25079861
+--- /dev/null
++++ b/gateway/stall_watchdog.py
+@@ -0,0 +1,309 @@
++"""``logging.stall_watchdog`` (default on): record what the gateway was doing when its asyncio loop stalled.
++
++A daemon thread asks the loop every second to set an event (``call_soon_threadsafe``). When the loop has
++not run the callback within ``logging.stall_watchdog_threshold_seconds`` (default 5), the thread writes one
++report to ``$HERMES_HOME/logs/stalls/stall-<UTC time>.txt``: a timestamp, the loop thread's stack and
++every other thread's stack (innermost frame first, file:line and function only), the coroutine chain of the
++task the loop is running, the number of live child processes (by command name) and the number of requests
++in flight per method. No local variables, arguments, message text or environment are read. When the loop
++recovers, the report gets one last line with the stall's length.
++
++At most one report per 60 s is written and the newest 50 are kept. SIGUSR2 also dumps all thread stacks
++(faulthandler) to ``stalls/sigusr2.txt``; that file is appended to and never pruned.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import contextlib
++import faulthandler
++import logging
++import os
++import re
++import signal
++import sys
++import threading
++import time
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any, Iterator, Optional
++
++logger = logging.getLogger(__name__)
++
++DEFAULT_THRESHOLD_S = 5.0
++PING_INTERVAL_S = 1.0
++MIN_REPORT_GAP_S = 60.0
++KEEP_REPORTS = 50
++MAX_FRAMES = 60
++_POLL_S = 0.05
++_REPORT_RE = re.compile(r"^stall-\d{8}T\d{6}Z\.txt$")
++_NAME_RE = re.compile(r"[^A-Za-z0-9_.:-]")
++
++_inflight_lock = threading.Lock()
++_inflight: dict[str, int] = {}
++_sigusr2_file: Any = None
++
++
++@contextlib.contextmanager
++def track_request(method: str) -> Iterator[None]:
++    """Count a request while its handler runs, so a report says how many of each method were in flight."""
++    with _inflight_lock:
++        _inflight[method] = _inflight.get(method, 0) + 1
++    try:
++        yield
++    finally:
++        with _inflight_lock:
++            left = _inflight.get(method, 1) - 1
++            if left > 0:
++                _inflight[method] = left
++            else:
++                _inflight.pop(method, None)
++
++
++def inflight_counts() -> dict[str, int]:
++    with _inflight_lock:
++        return dict(_inflight)
++
++
++def stalls_dir(home: Optional[Path] = None) -> Path:
++    if home is None:
++        from hermes_constants import get_hermes_home
++        home = Path(get_hermes_home())
++    return Path(home) / "logs" / "stalls"
++
++
++def _where(frame: Any) -> str:
++    code = frame.f_code
++    return f"{code.co_filename}:{frame.f_lineno} {code.co_name}"
++
++
++def _stack_lines(frame: Any) -> list[str]:
++    lines: list[str] = []
++    while frame is not None and len(lines) < MAX_FRAMES:
++        lines.append("    " + _where(frame))
++        frame = frame.f_back
++    if frame is not None:
++        lines.append("    ...")
++    return lines
++
++
++def _coro_chain(coro: Any) -> list[str]:
++    out: list[str] = []
++    seen = 0
++    while coro is not None and seen < 32:
++        seen += 1
++        frame = getattr(coro, "cr_frame", None) or getattr(coro, "ag_frame", None) or getattr(coro, "gi_frame", None)
++        if frame is not None:
++            out.append("    " + _where(frame))
++        coro = getattr(coro, "cr_await", None) or getattr(coro, "ag_await", None) or getattr(coro, "gi_yieldfrom", None)
++    return out
++
++
++def _child_counts() -> Optional[dict[str, int]]:
++    """Live child processes of this process by command name (``/proc``; None where it is not there)."""
++    if not os.path.isdir("/proc/self"):
++        return None
++    me = os.getpid()
++    counts: dict[str, int] = {}
++    try:
++        names = os.listdir("/proc")
++    except OSError:
++        return None
++    for name in names:
++        if not name.isdigit():
++            continue
++        try:
++            with open(f"/proc/{name}/stat", "rb") as fh:
++                raw = fh.read().decode("utf-8", "replace")
++        except OSError:
++            continue
++        end = raw.rfind(")")
++        start = raw.find("(")
++        if end < 0 or start < 0:
++            continue
++        rest = raw[end + 2:].split()
++        if len(rest) < 2 or rest[1] != str(me):
++            continue
++        comm = _NAME_RE.sub("?", raw[start + 1:end])[:30]
++        counts[comm] = counts.get(comm, 0) + 1
++    return counts
++
++
++def build_report(loop: asyncio.AbstractEventLoop, loop_thread: Optional[int], stalled_s: float) -> str:
++    now = datetime.now(timezone.utc)
++    out = [
++        f"time_utc: {now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z",
++        f"pid: {os.getpid()}",
++        f"stalled_at_least_s: {stalled_s:.1f}",
++    ]
++    children = _child_counts()
++    if children is None:
++        out.append("child_processes: unknown")
++    else:
++        detail = ", ".join(f"{k}={v}" for k, v in sorted(children.items()))
++        out.append(f"child_processes: {sum(children.values())}" + (f" ({detail})" if detail else ""))
++    counts = inflight_counts()
++    out.append(f"session_list_in_flight: {counts.get('session.list', 0)}")
++    out.append("requests_in_flight: " + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"))
++    task = None
++    with contextlib.suppress(Exception):
++        task = asyncio.current_task(loop)
++    if task is None:
++        out.append("loop_running_task: none (a plain callback, or the loop is in a call outside any task)")
++    else:
++        out.append("loop_running_task coroutine chain (outermost first):")
++        out.extend(_coro_chain(task.get_coro()) or ["    (not available)"])
++    names = {t.ident: t.name for t in threading.enumerate()}
++    frames = dict(sys._current_frames())
++    order = sorted(frames, key=lambda i: (i != loop_thread, i != threading.main_thread().ident, str(names.get(i))))
++    for ident in order:
++        if ident == threading.get_ident():
++            continue
++        label = _NAME_RE.sub("?", str(names.get(ident, "unnamed")))[:60]
++        role = "LOOP THREAD" if ident == loop_thread else "thread"
++        out.append("")
++        out.append(f"{role} {label} (innermost frame first):")
++        out.extend(_stack_lines(frames[ident]))
++    return "\n".join(out) + "\n"
++
++
++def _prune(directory: Path) -> None:
++    with contextlib.suppress(OSError):
++        files = sorted(p for p in directory.iterdir() if _REPORT_RE.match(p.name))
++        for old in files[:-KEEP_REPORTS]:
++            with contextlib.suppress(OSError):
++                old.unlink()
++
++
++class StallWatchdog:
++    def __init__(
++        self,
++        loop: asyncio.AbstractEventLoop,
++        directory: Path,
++        threshold_s: float = DEFAULT_THRESHOLD_S,
++        ping_interval_s: float = PING_INTERVAL_S,
++        min_gap_s: float = MIN_REPORT_GAP_S,
++    ) -> None:
++        self.loop = loop
++        self.directory = Path(directory)
++        self.threshold_s = threshold_s
++        self.ping_interval_s = ping_interval_s
++        self.min_gap_s = min_gap_s
++        self.loop_thread = threading.get_ident()
++        self.reports = 0
++        self._stop = threading.Event()
++        self._last_report: Optional[float] = None
++        self._thread = threading.Thread(target=self._run, name="stall-watchdog", daemon=True)
++
++    def start(self) -> "StallWatchdog":
++        self._thread.start()
++        return self
++
++    def stop(self) -> None:
++        self._stop.set()
++
++    def join(self, timeout: Optional[float] = None) -> None:
++        self._thread.join(timeout)
++
++    def is_alive(self) -> bool:
++        return self._thread.is_alive()
++
++    def _ping(self) -> Optional[threading.Event]:
++        serviced = threading.Event()
++        try:
++            self.loop.call_soon_threadsafe(serviced.set)
++        except RuntimeError:
++            return None
++        return serviced
++
++    def _wait(self, serviced: threading.Event, seconds: Optional[float]) -> bool:
++        deadline = None if seconds is None else time.monotonic() + seconds
++        while not self._stop.is_set():
++            if serviced.wait(_POLL_S):
++                return True
++            if deadline is not None and time.monotonic() >= deadline:
++                return False
++        return True
++
++    def _write(self, stalled_s: float) -> Optional[Path]:
++        now = time.monotonic()
++        if self._last_report is not None and now - self._last_report < self.min_gap_s:
++            return None
++        self._last_report = now
++        try:
++            self.directory.mkdir(parents=True, exist_ok=True)
++            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
++            path = self.directory / f"stall-{stamp}.txt"
++            path.write_text(build_report(self.loop, self.loop_thread, stalled_s), encoding="utf-8")
++            self.reports += 1
++            _prune(self.directory)
++            return path
++        except Exception:
++            logger.debug("stall watchdog could not write a report", exc_info=True)
++            return None
++
++    def _run(self) -> None:
++        while not self._stop.wait(self.ping_interval_s):
++            serviced = self._ping()
++            if serviced is None:
++                return
++            sent = time.monotonic()
++            if self._wait(serviced, self.threshold_s):
++                continue
++            path = self._write(time.monotonic() - sent)
++            self._wait(serviced, None)
++            if path is not None and serviced.is_set():
++                with contextlib.suppress(Exception):
++                    with open(path, "a", encoding="utf-8") as fh:
++                        fh.write(f"\nloop_recovered_after_s: {time.monotonic() - sent:.1f}\n")
++
++
++def _register_sigusr2(directory: Path) -> None:
++    global _sigusr2_file
++    sig = getattr(signal, "SIGUSR2", None)
++    if sig is None or not hasattr(faulthandler, "register"):
++        return
++    try:
++        directory.mkdir(parents=True, exist_ok=True)
++        new = open(directory / "sigusr2.txt", "a", encoding="utf-8")  # windows-footgun: ok (append dump target)
++        faulthandler.register(sig, file=new, all_threads=True, chain=False)
++    except Exception:
++        logger.debug("stall watchdog could not register SIGUSR2", exc_info=True)
++        return
++    old, _sigusr2_file = _sigusr2_file, new
++    if old is not None:
++        with contextlib.suppress(Exception):
++            old.close()
++
++
++def _setting(name: str, default: Any) -> Any:
++    try:
++        from hermes_cli.config_effective import load_user_config_effective
++        from hermes_constants import get_config_path
++        cfg = load_user_config_effective(get_config_path()) or {}
++    except Exception:
++        return default
++    section = cfg.get("logging")
++    if isinstance(section, dict) and name in section:
++        return section[name]
++    return default
++
++
++def start(loop: asyncio.AbstractEventLoop, home: Optional[Path] = None) -> Optional[StallWatchdog]:
++    """Start the watchdog on the loop's thread unless ``logging.stall_watchdog`` is false."""
++    enabled = _setting("stall_watchdog", True)
++    if enabled in (False, 0, "false", "False", "off", "no"):
++        return None
++    try:
++        threshold = float(_setting("stall_watchdog_threshold_seconds", DEFAULT_THRESHOLD_S))
++    except (TypeError, ValueError):
++        threshold = DEFAULT_THRESHOLD_S
++    if threshold <= 0:
++        threshold = DEFAULT_THRESHOLD_S
++    try:
++        directory = stalls_dir(home)
++        _register_sigusr2(directory)
++        return StallWatchdog(loop, directory, threshold_s=threshold).start()
++    except Exception:
++        logger.debug("stall watchdog did not start", exc_info=True)
++        return None
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index eeec5266..ec186e79 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2123,6 +2123,10 @@ DEFAULT_CONFIG = {
+         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
+         "max_size_mb": 5,      # max size per log file before rotation
+         "backup_count": 3,     # rotated backups to keep
++        # Gateway: when its asyncio loop stops answering for this many seconds, write all thread stacks to
++        # logs/stalls/stall-<UTC time>.txt (one per 60 s, newest 50 kept). SIGUSR2 dumps to stalls/sigusr2.txt.
++        "stall_watchdog": True,
++        "stall_watchdog_threshold_seconds": 5,
+     },
+     # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
+     # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a
+diff --git a/tests/gateway/test_stall_watchdog.py b/tests/gateway/test_stall_watchdog.py
+new file mode 100644
+index 00000000..f337a02d
+--- /dev/null
++++ b/tests/gateway/test_stall_watchdog.py
+@@ -0,0 +1,262 @@
++"""logging.stall_watchdog: a report of every thread's stack when the gateway loop stops answering."""
++
++import asyncio
++import os
++import signal
++import threading
++import time
++from pathlib import Path
++
++import pytest
++
++from gateway import stall_watchdog
++from gateway.stall_watchdog import StallWatchdog
++
++
++@pytest.fixture(autouse=True)
++def _home(monkeypatch, tmp_path):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    yield
++
++
++def _reports(directory: Path) -> list[Path]:
++    return sorted(directory.glob("stall-*.txt")) if directory.exists() else []
++
++
++def _blocking_frame_for_test(seconds: float) -> None:
++    time.sleep(seconds)
++
++
++def _run(coro_fn):
++    return asyncio.run(coro_fn())
++
++
++def _loop_section(text: str) -> list[str]:
++    lines = text.splitlines()
++    start = next(i for i, ln in enumerate(lines) if ln.startswith("LOOP THREAD"))
++    body = []
++    for ln in lines[start + 1:]:
++        if not ln.startswith("    "):
++            break
++        body.append(ln.strip())
++    return body
++
++
++def test_defaults_are_on_with_five_seconds():
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++
++    assert DEFAULT_CONFIG["logging"]["stall_watchdog"] is True
++    assert DEFAULT_CONFIG["logging"]["stall_watchdog_threshold_seconds"] == 5
++    assert stall_watchdog.DEFAULT_THRESHOLD_S == 5.0
++
++
++def test_six_second_block_writes_one_report_with_the_blocking_frame_on_top(tmp_path):
++    directory = tmp_path / "logs" / "stalls"
++
++    async def main():
++        dog = stall_watchdog.start(asyncio.get_running_loop())
++        assert dog is not None
++        await asyncio.sleep(1.5)
++        _blocking_frame_for_test(6.0)
++        await asyncio.sleep(1.5)
++        dog.stop()
++        dog.join(2)
++
++    _run(main)
++    reports = _reports(directory)
++    assert len(reports) == 1
++    text = reports[0].read_text(encoding="utf-8")
++    top = _loop_section(text)[0]
++    assert "_blocking_frame_for_test" in top
++    assert "test_stall_watchdog.py" in top
++    assert "stalled_at_least_s:" in text
++    assert "child_processes:" in text
++    assert "session_list_in_flight: 0" in text
++    assert "loop_running_task coroutine chain" in text
++    assert "main" in text
++    assert "loop_recovered_after_s:" in text
++    assert directory == stall_watchdog.stalls_dir()
++
++
++def test_healthy_loop_writes_nothing(tmp_path):
++    directory = tmp_path / "stalls"
++
++    async def main():
++        dog = StallWatchdog(asyncio.get_running_loop(), directory, threshold_s=0.5, ping_interval_s=0.05).start()
++        for _ in range(20):
++            await asyncio.sleep(0.05)
++        dog.stop()
++        dog.join(2)
++
++    _run(main)
++    assert _reports(directory) == []
++
++
++def test_rate_limit_one_report_per_gap(tmp_path):
++    directory = tmp_path / "stalls"
++
++    async def main():
++        dog = StallWatchdog(
++            asyncio.get_running_loop(), directory, threshold_s=0.2, ping_interval_s=0.05, min_gap_s=60.0
++        ).start()
++        await asyncio.sleep(0.2)
++        for _ in range(3):
++            _blocking_frame_for_test(0.6)
++            await asyncio.sleep(0.3)
++        dog.stop()
++        dog.join(2)
++        return dog
++
++    dog = _run(main)
++    assert dog.reports == 1
++    assert len(_reports(directory)) == 1
++
++
++def test_a_second_report_is_written_once_the_gap_has_passed(tmp_path):
++    directory = tmp_path / "stalls"
++
++    async def main():
++        dog = StallWatchdog(
++            asyncio.get_running_loop(), directory, threshold_s=0.2, ping_interval_s=0.05, min_gap_s=0.0
++        ).start()
++        await asyncio.sleep(0.2)
++        _blocking_frame_for_test(0.6)
++        await asyncio.sleep(0.3)
++        time.sleep(1.1)
++        _blocking_frame_for_test(0.6)
++        await asyncio.sleep(0.3)
++        dog.stop()
++        dog.join(2)
++        return dog
++
++    dog = _run(main)
++    assert dog.reports == 2
++    assert len(_reports(directory)) == 2
++
++
++def test_only_the_newest_fifty_reports_are_kept(tmp_path):
++    directory = tmp_path / "stalls"
++    directory.mkdir()
++    for i in range(60):
++        (directory / f"stall-20260101T0000{i:02d}Z.txt").write_text("old")
++    (directory / "sigusr2.txt").write_text("keep")
++    stall_watchdog._prune(directory)
++    names = sorted(p.name for p in _reports(directory))
++    assert len(names) == stall_watchdog.KEEP_REPORTS == 50
++    assert names[0] == "stall-20260101T000010Z.txt"
++    assert (directory / "sigusr2.txt").exists()
++
++
++def test_report_has_stack_frames_only_no_locals_or_arguments(tmp_path):
++    secret = "sk-test-SECRET-VALUE-123"
++    ready = threading.Event()
++    release = threading.Event()
++
++    def worker(argument):
++        local_value = argument + "-local"
++        ready.set()
++        release.wait(5)
++        return local_value
++
++    t = threading.Thread(target=worker, args=(secret,), name="worker-under-test")
++    t.start()
++    ready.wait(2)
++    try:
++        async def main():
++            return stall_watchdog.build_report(asyncio.get_running_loop(), threading.get_ident(), 7.0)
++
++        text = _run(main)
++    finally:
++        release.set()
++        t.join(2)
++    assert "worker-under-test" in text
++    assert "worker" in text
++    assert secret not in text
++    assert "-local" not in text
++
++
++def test_in_flight_requests_are_counted_while_the_handler_runs():
++    seen = []
++    with stall_watchdog.track_request("session.list"):
++        with stall_watchdog.track_request("session.list"):
++            seen.append(stall_watchdog.inflight_counts().get("session.list"))
++        seen.append(stall_watchdog.inflight_counts().get("session.list"))
++    assert seen == [2, 1]
++    assert "session.list" not in stall_watchdog.inflight_counts()
++    with pytest.raises(RuntimeError):
++        with stall_watchdog.track_request("x.y"):
++            raise RuntimeError
++    assert "x.y" not in stall_watchdog.inflight_counts()
++
++
++def test_report_counts_session_list_in_flight():
++    async def main():
++        with stall_watchdog.track_request("session.list"):
++            return stall_watchdog.build_report(asyncio.get_running_loop(), threading.get_ident(), 6.0)
++
++    assert "session_list_in_flight: 1" in _run(main)
++
++
++def test_rpc_dispatch_tracks_the_method(monkeypatch):
++    from tui_gateway import server
++
++    seen = []
++
++    def handler(rid, params):
++        seen.append(stall_watchdog.inflight_counts().get("test.stallwd"))
++        return {"jsonrpc": "2.0", "id": rid, "result": {}}
++
++    monkeypatch.setitem(server._methods, "test.stallwd", handler)
++    server._handle_admitted_request({"id": "1", "method": "test.stallwd", "params": {}})
++    assert seen == [1]
++    assert "test.stallwd" not in stall_watchdog.inflight_counts()
++
++
++def test_disabled_by_config(monkeypatch, tmp_path):
++    (tmp_path / "config.yaml").write_text("logging:\n  stall_watchdog: false\n", encoding="utf-8")
++
++    async def main():
++        return stall_watchdog.start(asyncio.get_running_loop())
++
++    assert _run(main) is None
++
++
++def test_threshold_comes_from_config(monkeypatch, tmp_path):
++    (tmp_path / "config.yaml").write_text(
++        "logging:\n  stall_watchdog_threshold_seconds: 12\n", encoding="utf-8"
++    )
++
++    async def main():
++        dog = stall_watchdog.start(asyncio.get_running_loop())
++        dog.stop()
++        dog.join(2)
++        return dog
++
++    assert _run(main).threshold_s == 12.0
++
++
++@pytest.mark.skipif(not hasattr(signal, "SIGUSR2"), reason="POSIX only")
++def test_sigusr2_dumps_all_threads_into_the_stalls_folder(tmp_path):
++    async def main():
++        dog = stall_watchdog.start(asyncio.get_running_loop())
++        os.kill(os.getpid(), signal.SIGUSR2)
++        await asyncio.sleep(0.3)
++        dog.stop()
++        dog.join(2)
++
++    _run(main)
++    dump = tmp_path / "logs" / "stalls" / "sigusr2.txt"
++    assert dump.exists()
++    assert "most recent call first" in dump.read_text(encoding="utf-8")
++    faulthandler_off = __import__("faulthandler")
++    faulthandler_off.unregister(signal.SIGUSR2)
++
++
++def test_stopped_watchdog_thread_exits(tmp_path):
++    async def main():
++        dog = StallWatchdog(asyncio.get_running_loop(), tmp_path / "s", ping_interval_s=0.05).start()
++        dog.stop()
++        dog.join(2)
++        return dog
++
++    assert not _run(main).is_alive()
+diff --git a/tui_gateway/rpc_dispatch.py b/tui_gateway/rpc_dispatch.py
+index 1f8d451f..46b61621 100644
+--- a/tui_gateway/rpc_dispatch.py
++++ b/tui_gateway/rpc_dispatch.py
+@@ -28,11 +28,13 @@ def _handle_admitted_request(req: dict) -> dict | None:
+         params, problem = _contracts.validate_params(contract, params)
+         if problem is not None:
+             return _err(rid, 4000, problem)
++    from gateway import stall_watchdog
+     from hermes_cli.config_backend import ConfigBackendUnavailable
+ 
+     token = _current_rpc_method.set(method)
+     try:
+-        response = fn(rid, params)
++        with stall_watchdog.track_request(method):
++            response = fn(rid, params)
+     except ProfileUnavailableError as exc:
+         return _err(rid, 4064, str(exc))
+     except ConfigBackendUnavailable as exc:
+-- 
+2.56.0
+

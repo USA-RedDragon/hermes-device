@@ -1,0 +1,5 @@
+# Neighbors of the code the watchdog hooks into: the loop liveness guards, the stop trace, JSON-RPC dispatch
+tests/gateway/test_loop_liveness_watchdog.py
+tests/gateway/test_stop_trace.py
+tests/tui_gateway/test_rpc_dispatch_pool_errors.py
+tests/tui_gateway/contracts/test_generated.py
