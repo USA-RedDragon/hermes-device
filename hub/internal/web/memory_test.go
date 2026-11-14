@@ -151,6 +151,51 @@ func TestProjectMemoryAPI(t *testing.T) {
 	}
 }
 
+func TestProjectSkillsAPI(t *testing.T) {
+	t.Parallel()
+	e := setupMemory(t)
+	const demo = "github.com-alice-demo"
+	e.pc.AddProject(hub.Project{ID: demo, Identity: "github.com/alice/demo", Kind: hub.ProjectRemote, Name: "demo", Skills: 2})
+	e.pc.AddProjectSkill(demo, hub.ProjectSkillDoc{ProjectSkill: hub.ProjectSkill{Name: "demo-layout", Path: "demo-layout", Description: "Use when changing demo's layout.", Enabled: true}, Content: "# demo-layout\n<img src=x onerror=alert(1)>"})
+	e.pc.AddProjectSkill(demo, hub.ProjectSkillDoc{ProjectSkill: hub.ProjectSkill{Name: "demo-release", Path: "ci/demo-release", Description: "Use when releasing demo."}, Content: "# release"})
+	c := client(t)
+	m := login(t, e.hubEnv, c)
+	base := e.url + "/api/memory/pc/projects/" + demo + "/skills"
+	var list hub.ProjectSkills
+	if code := apiJSON(t, c, http.MethodGet, base, "", nil, &list); code != http.StatusOK || list.Project.Identity != "github.com/alice/demo" ||
+		len(list.Skills) != 2 || list.Skills[0].Name != "demo-layout" || !list.Skills[0].Enabled || list.Skills[1].Enabled {
+		t.Fatalf("skills = %d %+v", code, list)
+	}
+	var doc hub.ProjectSkillDoc
+	if code := apiJSON(t, c, http.MethodGet, base+"/demo-layout", "", nil, &doc); code != http.StatusOK || !strings.Contains(doc.Content, "# demo-layout") || doc.Files == nil {
+		t.Fatalf("skill = %d %+v", code, doc)
+	}
+	var errm map[string]any
+	for _, name := range []string{"nope", "..", "a%2Fb", "%2e%2e"} {
+		if code := apiJSON(t, c, http.MethodGet, base+"/"+name, "", nil, &errm); code != http.StatusNotFound {
+			t.Errorf("skill %q = %d", name, code)
+		}
+	}
+	if code, _, _ := call(t, c, http.MethodDelete, base+"/demo-layout", "", nil); code != http.StatusForbidden {
+		t.Fatalf("delete without CSRF = %d", code)
+	}
+	code, _, text := call(t, c, http.MethodDelete, base+"/demo-layout", m.CSRF, nil)
+	list = hub.ProjectSkills{}
+	if err := json.Unmarshal([]byte(text), &list); err != nil || code != http.StatusOK || len(list.Skills) != 1 || list.Skills[0].Name != "demo-release" {
+		t.Fatalf("delete = %d %s", code, text)
+	}
+	if code, _, _ := call(t, c, http.MethodDelete, base+"/demo-layout", m.CSRF, nil); code != http.StatusNotFound {
+		t.Fatalf("delete again = %d", code)
+	}
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/pc/projects/github.com-bob-other/skills", "", nil, &errm); code != http.StatusNotFound {
+		t.Fatalf("skills of an unknown project = %d", code)
+	}
+	e.pc.NoProjects = true
+	if code := apiJSON(t, c, http.MethodGet, base, "", nil, &errm); code != http.StatusNotFound || errm["error"] != "This backend has no such memory" {
+		t.Fatalf("skills without the plugin = %d %v", code, errm)
+	}
+}
+
 func TestMemoryAccess(t *testing.T) {
 	t.Parallel()
 	e := setupMemory(t)
@@ -172,9 +217,15 @@ func TestMemoryAccess(t *testing.T) {
 		{http.MethodGet, "/api/memory/pc/projects"},
 		{http.MethodGet, "/api/memory/pc/projects/github.com-alice-demo/notes"},
 		{http.MethodPost, "/api/memory/pc/projects/github.com-alice-demo/notes/memory/add"},
+		{http.MethodGet, "/api/memory/pc/projects/github.com-alice-demo/skills"},
+		{http.MethodGet, "/api/memory/pc/projects/github.com-alice-demo/skills/demo-layout"},
+		{http.MethodDelete, "/api/memory/pc/projects/github.com-alice-demo/skills/demo-layout"},
 	} {
 		body := map[string]any{fieldContent: "x", "enabled": true}
-		if code := apiJSON(t, c, r.method, e.url+r.path, m.CSRF, body, &errm); code != http.StatusForbidden {
+		if r.method == http.MethodDelete {
+			body = nil
+		}
+		if code, _, _ := call(t, c, r.method, e.url+r.path, m.CSRF, body); code != http.StatusForbidden {
 			t.Errorf("%s %s = %d", r.method, r.path, code)
 		}
 	}

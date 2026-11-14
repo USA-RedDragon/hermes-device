@@ -93,8 +93,10 @@ type Project struct {
 	RootCommit string       `json:"root_commit"`
 	Folders    []SeenFolder `json:"folders"`
 	Count      int          `json:"count"`
-	Used       int          `json:"used"`
-	Limit      int          `json:"limit"`
+	// Skills is how many project skills the project has.
+	Skills int `json:"skills"`
+	Used   int `json:"used"`
+	Limit  int `json:"limit"`
 }
 
 // SeenFolder is a folder on a device where Hermes saw a project. Device is
@@ -111,6 +113,38 @@ type SeenFolder struct {
 type ProjectNotes struct {
 	Notes
 	Project Project `json:"project"`
+}
+
+// ProjectSkill is one skill that lives in a project, not in the global
+// skills. Name is what the agent loads it by and Path the folder it sits in;
+// Enabled is false when the user turned the name off.
+type ProjectSkill struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// ProjectSkills are the skills of one project.
+type ProjectSkills struct {
+	Project ProjectRef     `json:"project"`
+	Skills  []ProjectSkill `json:"skills"`
+}
+
+// ProjectRef names a project in an answer about its skills.
+type ProjectRef struct {
+	ID       string `json:"id"`
+	Identity string `json:"identity"`
+	Name     string `json:"name"`
+}
+
+// ProjectSkillDoc is one project skill with the text of its SKILL.md and the
+// names of the other files in its folder.
+type ProjectSkillDoc struct {
+	ProjectSkill
+	Content   string   `json:"content"`
+	Truncated bool     `json:"truncated"`
+	Files     []string `json:"files"`
 }
 
 // PendingNote is a memory write Hermes staged for approval.
@@ -211,6 +245,11 @@ type Memory interface {
 	// ChangeProjectNote applies a change, as ChangeNote does, to a
 	// project's MEMORY.md.
 	ChangeProjectNote(ctx context.Context, user, backendID, projectID, op, entry, content string, base []string) (ProjectNotes, error)
+	// ProjectSkills lists a project's own skills, ProjectSkill reads one
+	// and DeleteProjectSkill removes one and answers with the rest.
+	ProjectSkills(ctx context.Context, user, backendID, projectID string) (ProjectSkills, error)
+	ProjectSkill(ctx context.Context, user, backendID, projectID, name string) (ProjectSkillDoc, error)
+	DeleteProjectSkill(ctx context.Context, user, backendID, projectID, name string) (ProjectSkills, error)
 	Learned(ctx context.Context, user, backendID string, q LearnedQuery) (LearnedPage, error)
 	LearnedInfo(ctx context.Context, user, backendID string) (LearnedInfo, error)
 	AddLearned(ctx context.Context, user, backendID, content string) (Conclusion, error)

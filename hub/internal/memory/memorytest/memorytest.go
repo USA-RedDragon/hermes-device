@@ -83,6 +83,52 @@ type Plugin struct {
 	mu       sync.Mutex
 	notes    hub.Notes
 	projects []hub.ProjectNotes
+	skills   map[string][]hub.ProjectSkillDoc
+}
+
+// AddProjectSkill gives a project a skill, as the project-memory plugin
+// would list it.
+func (p *Plugin) AddProjectSkill(projectID string, sk hub.ProjectSkillDoc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.skills == nil {
+		p.skills = map[string][]hub.ProjectSkillDoc{}
+	}
+	if sk.Files == nil {
+		sk.Files = []string{}
+	}
+	p.skills[projectID] = append(p.skills[projectID], sk)
+}
+
+func (p *Plugin) skillList(pn *hub.ProjectNotes) hub.ProjectSkills {
+	out := hub.ProjectSkills{Project: hub.ProjectRef{ID: pn.Project.ID, Identity: pn.Project.Identity, Name: pn.Project.Name}, Skills: []hub.ProjectSkill{}}
+	for _, d := range p.skills[pn.Project.ID] {
+		out.Skills = append(out.Skills, d.ProjectSkill)
+	}
+	return out
+}
+
+func (p *Plugin) serveSkills(w http.ResponseWriter, method string, pn *hub.ProjectNotes, parts []string) {
+	switch {
+	case method == http.MethodGet && len(parts) == 2:
+		writeJSON(w, http.StatusOK, p.skillList(pn))
+		return
+	case len(parts) == 3 && (method == http.MethodGet || method == http.MethodDelete):
+		list := p.skills[pn.Project.ID]
+		i := slices.IndexFunc(list, func(d hub.ProjectSkillDoc) bool { return d.Name == parts[2] })
+		if i < 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{keyError: "unknown_skill", keyMsg: "This project has no such skill."})
+			return
+		}
+		if method == http.MethodGet {
+			writeJSON(w, http.StatusOK, list[i])
+			return
+		}
+		p.skills[pn.Project.ID] = slices.Delete(list, i, i+1)
+		writeJSON(w, http.StatusOK, p.skillList(pn))
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{keyDetail: notFound})
 }
 
 // AddProject adds a project whose MEMORY.md holds entries.
@@ -248,6 +294,9 @@ func (p *Plugin) serveProject(w http.ResponseWriter, method, rest string, body m
 	}
 	pn := &p.projects[i]
 	switch {
+	case len(parts) >= 2 && parts[1] == "skills":
+		p.serveSkills(w, method, pn, parts)
+		return
 	case method == http.MethodGet && len(parts) == 1:
 	case method == http.MethodPost && len(parts) == 3 && parts[1] == "memory":
 		if p.Refuse != "" {

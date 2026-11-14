@@ -24,6 +24,9 @@ func (s *Server) memoryRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/memory/{backend}/projects", s.api(s.handleProjects))
 	mux.Handle("GET /api/memory/{backend}/projects/{project}/notes", s.api(s.handleProjectNotes))
 	mux.Handle("POST /api/memory/{backend}/projects/{project}/notes/{target}/{op}", s.api(s.handleChangeProjectNote))
+	mux.Handle("GET /api/memory/{backend}/projects/{project}/skills", s.api(s.handleProjectSkills))
+	mux.Handle("GET /api/memory/{backend}/projects/{project}/skills/{skill}", s.api(s.handleProjectSkill))
+	mux.Handle("DELETE /api/memory/{backend}/projects/{project}/skills/{skill}", s.api(s.handleDeleteProjectSkill))
 	mux.Handle("GET /api/memory/{backend}/learned", s.api(s.handleLearned))
 	mux.Handle("POST /api/memory/{backend}/learned", s.api(s.handleAddLearned))
 	mux.Handle("GET /api/memory/{backend}/learned/info", s.api(s.handleLearnedInfo))
@@ -141,6 +144,45 @@ func (s *Server) handleChangeProjectNote(w http.ResponseWriter, r *http.Request)
 	}
 	n, err := s.memory.ChangeProjectNote(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("project"), r.PathValue("op"), body.Entry, body.Content, body.Base)
 	s.projectAnswer(w, n, err)
+}
+
+func (s *Server) handleProjectSkills(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		s.memoryFail(w, hub.ErrNoMemory)
+		return
+	}
+	v, err := s.memory.ProjectSkills(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("project"))
+	if err != nil {
+		s.memoryFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) handleProjectSkill(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		s.memoryFail(w, hub.ErrNoMemory)
+		return
+	}
+	v, err := s.memory.ProjectSkill(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("project"), r.PathValue("skill"))
+	if err != nil {
+		s.memoryFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) handleDeleteProjectSkill(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		s.memoryFail(w, hub.ErrNoMemory)
+		return
+	}
+	v, err := s.memory.DeleteProjectSkill(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("project"), r.PathValue("skill"))
+	if err != nil {
+		s.memoryFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 func (s *Server) handlePendingNote(w http.ResponseWriter, r *http.Request) {

@@ -585,3 +585,47 @@ func TestBacklog(t *testing.T) {
 		t.Fatalf("backlog of another user's backend: %v", err)
 	}
 }
+
+func TestProjectSkills(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	e.pc.AddProject(demoProject(), "Run make check.")
+	e.pc.AddProjectSkill(demoID, hub.ProjectSkillDoc{ProjectSkill: hub.ProjectSkill{Name: "demo-layout", Path: "demo-layout", Enabled: true}, Content: "# layout"})
+	ps, err := e.svc.ProjectSkills(ctx, alice, pcID, demoID)
+	if err != nil || len(ps.Skills) != 1 || ps.Skills[0].Name != "demo-layout" || ps.Project.Name != "demo" {
+		t.Fatalf("skills = %+v, %v", ps, err)
+	}
+	doc, err := e.svc.ProjectSkill(ctx, alice, pcID, demoID, "demo-layout")
+	if err != nil || doc.Content != "# layout" || doc.Files == nil {
+		t.Fatalf("skill = %+v, %v", doc, err)
+	}
+	before := len(e.pc.Requests())
+	for _, bad := range []struct{ id, name string }{{"..", "demo-layout"}, {demoID, ".."}, {demoID, "a/b"}, {demoID, "-x"}, {demoID, strings.Repeat("a", 200)}} {
+		if _, err := e.svc.ProjectSkill(ctx, alice, pcID, bad.id, bad.name); status(err) != http.StatusNotFound {
+			t.Fatalf("bad skill %+v: %v", bad, err)
+		}
+		if _, err := e.svc.DeleteProjectSkill(ctx, alice, pcID, bad.id, bad.name); status(err) != http.StatusNotFound {
+			t.Fatalf("bad delete %+v: %v", bad, err)
+		}
+	}
+	if after := len(e.pc.Requests()); after != before {
+		t.Fatalf("bad names reached Hermes: %d requests", after-before)
+	}
+	if _, err := e.svc.ProjectSkills(ctx, bob, pcID, demoID); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("bob skills on pc: %v", err)
+	}
+	if _, err := e.svc.DeleteProjectSkill(ctx, bob, pcID, demoID, "demo-layout"); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("bob delete on pc: %v", err)
+	}
+	if ps, err = e.svc.DeleteProjectSkill(ctx, alice, pcID, demoID, "demo-layout"); err != nil || len(ps.Skills) != 0 || ps.Skills == nil {
+		t.Fatalf("delete = %+v, %v", ps, err)
+	}
+	if _, err := e.svc.ProjectSkill(ctx, alice, pcID, demoID, "demo-layout"); status(err) != http.StatusNotFound {
+		t.Fatalf("skill after delete: %v", err)
+	}
+	e.pc.NoProjects = true
+	if _, err := e.svc.ProjectSkills(ctx, alice, pcID, demoID); !errors.Is(err, hub.ErrNoMemory) {
+		t.Fatalf("skills without the plugin: %v", err)
+	}
+}

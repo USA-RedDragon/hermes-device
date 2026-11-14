@@ -250,3 +250,15 @@ func (n *notes) changeProject(ctx context.Context, id, op, entry, content string
 	}
 	return n.project(ctx, http.MethodPost, projectBase+"/projects/"+url.PathEscape(id)+"/memory/"+op, body)
 }
+
+func (n *notes) projectSkills(ctx context.Context, method, path string, out any) error {
+	return n.send(ctx, method, path, nil, out)
+}
+
+func skillsBase(id string) string { return projectBase + "/projects/" + url.PathEscape(id) + "/skills" }
+
+func fillSkills(out *hub.ProjectSkills) {
+	if out.Skills == nil {
+		out.Skills = []hub.ProjectSkill{}
+	}
+}

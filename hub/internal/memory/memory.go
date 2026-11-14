@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -249,6 +250,65 @@ func (s *Service) ChangeProjectNote(ctx context.Context, user, backendID, projec
 		return hub.ProjectNotes{}, err
 	}
 	return n.changeProject(ctx, projectID, op, entry, content, base)
+}
+
+// skillName bounds what the hub passes to the plugin as a skill's name: one
+// path segment of plain characters.
+var skillName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$`)
+
+func (s *Service) skill(ctx context.Context, user, backendID, projectID, name string) (*notes, error) {
+	n, err := s.project(ctx, user, backendID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if name != "" && !skillName.MatchString(name) {
+		return nil, &hub.MemoryError{Status: http.StatusNotFound, Message: "The project has no such skill"}
+	}
+	return n, nil
+}
+
+// ProjectSkills lists a project's own skills.
+func (s *Service) ProjectSkills(ctx context.Context, user, backendID, projectID string) (hub.ProjectSkills, error) {
+	n, err := s.skill(ctx, user, backendID, projectID, "")
+	if err != nil {
+		return hub.ProjectSkills{}, err
+	}
+	var out hub.ProjectSkills
+	if err := n.projectSkills(ctx, http.MethodGet, skillsBase(projectID), &out); err != nil {
+		return hub.ProjectSkills{}, err
+	}
+	fillSkills(&out)
+	return out, nil
+}
+
+// ProjectSkill reads one project skill.
+func (s *Service) ProjectSkill(ctx context.Context, user, backendID, projectID, name string) (hub.ProjectSkillDoc, error) {
+	n, err := s.skill(ctx, user, backendID, projectID, name)
+	if err != nil {
+		return hub.ProjectSkillDoc{}, err
+	}
+	var out hub.ProjectSkillDoc
+	if err := n.projectSkills(ctx, http.MethodGet, skillsBase(projectID)+"/"+url.PathEscape(name), &out); err != nil {
+		return hub.ProjectSkillDoc{}, err
+	}
+	if out.Files == nil {
+		out.Files = []string{}
+	}
+	return out, nil
+}
+
+// DeleteProjectSkill removes one project skill and answers with the rest.
+func (s *Service) DeleteProjectSkill(ctx context.Context, user, backendID, projectID, name string) (hub.ProjectSkills, error) {
+	n, err := s.skill(ctx, user, backendID, projectID, name)
+	if err != nil {
+		return hub.ProjectSkills{}, err
+	}
+	var out hub.ProjectSkills
+	if err := n.projectSkills(ctx, http.MethodDelete, skillsBase(projectID)+"/"+url.PathEscape(name), &out); err != nil {
+		return hub.ProjectSkills{}, err
+	}
+	fillSkills(&out)
+	return out, nil
 }
 
 func view(v string) (string, error) {
