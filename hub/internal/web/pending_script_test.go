@@ -46,3 +46,21 @@ func TestGoneChatSaysSo(t *testing.T) {
 		t.Fatal("the gone view lacks its line or its link")
 	}
 }
+
+// Settings > Models draws its heading and a loading line before it asks
+// Hermes for anything, so a slow answer never leaves the pane blank.
+func TestModelsPaneDrawsBeforeItLoads(t *testing.T) {
+	t.Parallel()
+	b, err := os.ReadFile("static/models.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)async function load\(\) \{(.*?)\n  \}\n`).FindStringSubmatch(string(b))
+	if m == nil {
+		t.Fatal("no load function in the models pane")
+	}
+	draw, first := strings.Index(m[1], "draw();"), strings.Index(m[1], "await api(")
+	if draw < 0 || first < 0 || draw > first {
+		t.Fatalf("load must draw before its first await api(): draw at %d, api at %d", draw, first)
+	}
+}

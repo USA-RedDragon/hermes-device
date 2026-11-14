@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/config"
@@ -52,6 +53,7 @@ type Service struct {
 	rs     map[string]device.Requester
 	slow   time.Duration
 	claude func(ctx context.Context, user, backendID string) bool
+	seen   seenConnected
 }
 
 var _ hub.ModelSetup = (*Service)(nil)
@@ -312,11 +314,15 @@ func (s *Service) ModelCall(ctx context.Context, user, backendID string, c hub.M
 	if err != nil {
 		return nil, err
 	}
+	if c.Op != hub.ModelCatalog && c.Op != hub.ModelConnected && c.Op != hub.ModelOptions && c.Op != hub.ModelInfo && c.Op != hub.ModelRecommended {
+		// What it changes is what the next read must show.
+		s.seen.forget(backendID)
+	}
 	switch c.Op {
 	case hub.ModelCatalog:
 		return s.catalog(ctx, r, user, backendID)
 	case hub.ModelConnected:
-		return s.connected(ctx, r)
+		return s.connectedCached(ctx, r, backendID)
 	case hub.ModelOptions:
 		o, err := s.options(ctx, r, c.Refresh, false)
 		if err != nil {
@@ -769,21 +775,35 @@ func nonNil(s []string) []string {
 }
 
 func (s *Service) connected(ctx context.Context, r device.Requester) (json.RawMessage, error) {
-	o, err := s.options(ctx, r, false, false)
-	if err != nil {
-		return nil, err
+	// The four reads do not depend on each other: ask Hermes for all of
+	// them at once, each with its own time limit, so one slow answer
+	// costs its own wait and not the sum of all four.
+	var (
+		o    options
+		ep   endpoints
+		rows map[string]envRow
+		ps   []oauthProvider
+		errs [4]error
+		wg   sync.WaitGroup
+	)
+	each := func(i int, f func(ctx context.Context) error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, connectedLimit)
+			defer cancel()
+			errs[i] = f(cctx)
+		}()
 	}
-	ep, err := s.endpoints(ctx, r)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.env(ctx, r)
-	if err != nil {
-		return nil, err
-	}
-	ps, err := s.oauth(ctx, r)
-	if err != nil {
-		return nil, err
+	each(0, func(c context.Context) (err error) { o, err = s.options(c, r, false, false); return })
+	each(1, func(c context.Context) (err error) { ep, err = s.endpoints(c, r); return })
+	each(2, func(c context.Context) (err error) { rows, err = s.env(c, r); return })
+	each(3, func(c context.Context) (err error) { ps, err = s.oauth(c, r); return })
+	wg.Wait()
+	for _, e := range errs {
+		if e != nil {
+			return nil, e
+		}
 	}
 	keys := []keyProvider{}
 	for _, k := range keyProviders(rows, nil) {

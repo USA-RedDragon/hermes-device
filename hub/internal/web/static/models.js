@@ -977,6 +977,10 @@ window.HubModelSettings = (ctx) => {
   const pinned = () => (data && data.pinned) || null;
 
   async function load() {
+    // Show the heading and a loading line at once, not a blank pane until
+    // Hermes answers; the last answer (when there is one) stays up while
+    // the new one is read.
+    draw();
     if (!backends.length) {
       try {
         backends = await api("GET", "/api/backends");
@@ -1038,7 +1042,7 @@ window.HubModelSettings = (ctx) => {
       p.append(field("Agent", sel));
     }
     const acts = el("div", "acts");
-    acts.append(btn("primary", "Connect a model", () => ctx.connect(backend), "plus"));
+    if (backend) acts.append(btn("primary", "Connect a model", () => ctx.connect(backend), "plus"));
     p.append(acts);
     if (err) p.append(err);
     if (note) p.append(note);
