@@ -26,7 +26,7 @@ window.HubActivity = (ctx) => {
   function fresh(chat) {
     return { chat, subs: new Map(), bgs: new Map(), open: new Set(), tab: "sub", paused: false, turn: null,
       usage: null, running: false, error: "", failingSince: 0, loaded: false, polled: 0, timer: 0, tick: 0,
-      approvals: new Map(), asked: new Set(), minis: new Map(), raw: new Set() };
+      approvals: new Map(), asked: new Set(), minis: new Map(), raw: new Set(), nodes: new Map(), heads: new Map(), sumKey: "", fed: 0 };
   }
 
   // k writes a token count: 812, 1.3k, 41k, 1.2M.
@@ -99,7 +99,7 @@ window.HubActivity = (ctx) => {
   // should be drawn again.
   function event(kind, p) {
     p = p || {};
-    if (kind.startsWith("subagent.")) return subEvent(kind, p);
+    if (kind.startsWith("subagent.")) { S.fed = Date.now(); return subEvent(kind, p); }
     switch (kind) {
       case "background.start": {
         if (!p.task_id) return false;
@@ -380,6 +380,10 @@ window.HubActivity = (ctx) => {
     clearTimeout(S.timer);
     const busy = count() > 0 || S.running;
     let ms = busy || isOpen() ? 3000 : 20000;
+    // The event feed carries subagent starts, steps and ends: while it has
+    // spoken lately and no background command runs (a command's output
+    // comes only from the list), the list is read less often.
+    if (ms === 3000 && S.fed && Date.now() - S.fed < 15000 && ![...S.bgs.values()].some((r) => r.kind === "command" && live.has(r.state))) ms = 10000;
     if (S.error) ms = Math.max(ms, pollBackoff.next());
     else pollBackoff.reset();
     S.timer = setTimeout(poll, ms);
@@ -545,7 +549,7 @@ window.HubActivity = (ctx) => {
     }
     $("app").classList.remove("act-none");
     setOpen(wantOpen(), false);
-    S.tick = setInterval(() => { if (!document.hidden && count()) draw(); }, 1000);
+    S.tick = setInterval(() => { if (!document.hidden && count()) tickRows(); }, 1000);
     draw();
     soon();
   }
@@ -659,6 +663,50 @@ window.HubActivity = (ctx) => {
       out.push(box);
     }
     return out;
+  }
+
+  // rowKey says what a closed row shows apart from its clock: a row whose
+  // key is the same as when it was drawn keeps its node. Open rows are drawn
+  // again, since their body holds forms and a small chat.
+  function rowKey(r, child) {
+    let line = "";
+    if (r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait") {
+      const m = S.minis.get(r.id);
+      const l = window.HubToolCard.statusLine(r.tool.name, r.tool.preview, m ? m.view.memory() : null);
+      line = l.icon + "|" + l.text + "|" + (r.tool.at && ago((Date.now() - r.tool.at) / 1000) ? 1 : 0) + "|" + S.raw.has(r.id) + "|" + r.tool.name + " " + r.tool.preview;
+    }
+    return JSON.stringify([child, r.id, r.kind, r.state, r.goal, r.startedAt, r.endedAt, r.model, r.tools, r.tin, r.tout, r.now, line]);
+  }
+
+  // rowNode gives the node for row r: the one drawn before when nothing it
+  // shows changed, else a new one.
+  function rowNode(r, child) {
+    if (S.open.has(r.id)) { S.nodes.delete(r.id); return row(r, child); }
+    const key = rowKey(r, child);
+    const old = S.nodes.get(r.id);
+    if (old && old.r === r && old.key === key) return old.node;
+    const node = row(r, child);
+    S.nodes.set(r.id, { r, key, node });
+    return node;
+  }
+
+  // tickRows moves the clocks of the running rows that are on show, and
+  // nothing else: the second's tick does not build a row.
+  function tickRows() {
+    if (isOpen() && clocks()) draw();
+  }
+  function clocks() {
+    let redraw = false;
+    for (const [id, c] of S.nodes) {
+      const r = c.r;
+      if (r.endedAt || !c.node.isConnected) continue;
+      const t = c.node.querySelector(".time");
+      if (t) t.textContent = window.HubTimes.counter(Date.now() - r.startedAt);
+      const a = c.node.querySelector(".now2 .ago");
+      if (r.tool && r.tool.at && a) a.textContent = ago((Date.now() - r.tool.at) / 1000);
+      else if (r.kind === "sub" && c.key !== rowKey(r, JSON.parse(c.key)[0])) redraw = true;
+    }
+    return redraw;
   }
 
   function row(r, child) {
@@ -849,9 +897,11 @@ window.HubActivity = (ctx) => {
 
   function section(body, title, rows, tree) {
     if (!rows.length) return;
-    body.append(el("div", "sec", title));
+    let h = S.heads.get(title);
+    if (!h) { h = el("div", "sec", title); S.heads.set(title, h); }
+    body.push(h);
     const add = (r, depth) => {
-      body.append(row(r, depth > 0));
+      body.push(rowNode(r, depth > 0));
       for (const c of (tree && tree.get(r.id)) || []) add(c, depth + 1);
     };
     const top = tree ? rows.filter((r) => !r.parentId || !rows.some((x) => x.id === r.parentId)) : rows;
@@ -893,6 +943,9 @@ window.HubActivity = (ctx) => {
     $("c-sub").textContent = liveSub ? liveSub + " running" : "";
     $("c-bg").textContent = liveBg ? liveBg + " running" : "";
     const sum = $("actsum");
+    const sumKey = JSON.stringify([S.tab, liveSub, liveBg, subs.length, S.paused, S.error, totals(subs), totals(bgs.filter((r) => r.kind === "prompt"))]);
+    if (sumKey !== S.sumKey) {
+    S.sumKey = sumKey;
     sum.replaceChildren();
     if (S.tab === "sub") {
       const t = totals(subs);
@@ -903,6 +956,7 @@ window.HubActivity = (ctx) => {
       sum.append("Background prompts: ", el("b", "", k(t.i)), " in · ", el("b", "", k(t.o)), " out · commands use no tokens");
     }
     if (S.error) sum.append(el("div", "bad", "Could not load activity: " + S.error));
+    }
     const body = $("actbody");
     const top = body.scrollTop;
     // A small chat loses its place when its row is drawn again: keep it.
@@ -913,7 +967,7 @@ window.HubActivity = (ctx) => {
     const focus = document.activeElement && body.contains(document.activeElement) && document.activeElement.tagName === "INPUT"
       ? { row: document.activeElement.closest("[data-act]"), value: document.activeElement.value, pos: document.activeElement.selectionStart }
       : null;
-    body.replaceChildren();
+    const out = [];
     const rows = S.tab === "sub" ? subs : bgs;
     const now = rows.filter((r) => live.has(r.state)), done = rows.filter((r) => !live.has(r.state));
     const tree = S.tab === "sub" ? list(rows) : null;
@@ -923,13 +977,28 @@ window.HubActivity = (ctx) => {
       const rootOf = (r) => { let x = r; const seen = new Set(); while (x.parentId && S.subs.has(x.parentId) && !seen.has(x.id)) { seen.add(x.id); x = S.subs.get(x.parentId); } return x; };
       const nowRoots = rows.filter((r) => inNow.has(rootOf(r).id) || [...inNow].some((id) => rootOf(S.subs.get(id)).id === rootOf(r).id));
       const doneRows = rows.filter((r) => !nowRoots.includes(r));
-      section(body, "Now", nowRoots, tree);
-      section(body, "Finished", doneRows, tree);
+      section(out, "Now", nowRoots, tree);
+      section(out, "Finished", doneRows, tree);
     } else {
-      section(body, "Now", now, null);
-      section(body, "Finished", done, null);
+      section(out, "Now", now, null);
+      section(out, "Finished", done, null);
     }
-    if (!rows.length) body.append(el("div", "empty", S.tab === "sub" ? "No subagents in this chat yet." : "Nothing running in the background. Start a prompt with /bg in the message box."));
+    if (!rows.length) {
+      const text = S.tab === "sub" ? "No subagents in this chat yet." : "Nothing running in the background. Start a prompt with /bg in the message box.";
+      let e = S.heads.get(text);
+      if (!e) { e = el("div", "empty", text); S.heads.set(text, e); }
+      out.push(e);
+    }
+    // Put the nodes in place, moving only what is not where it belongs, so
+    // a row that did not change is not touched.
+    let at = body.firstChild;
+    for (const n of out) {
+      if (n === at) at = at.nextSibling;
+      else body.insertBefore(n, at);
+    }
+    while (at) { const nx = at.nextSibling; body.removeChild(at); at = nx; }
+    for (const id of [...S.nodes.keys()]) if (!out.includes(S.nodes.get(id).node)) S.nodes.delete(id);
+    clocks();
     for (const m of S.minis.values()) {
       const n = m.view.node;
       if (n.isConnected) n.scrollTop = m.end ? n.scrollHeight : m.top;

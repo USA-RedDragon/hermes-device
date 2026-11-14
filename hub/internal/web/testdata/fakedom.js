@@ -33,6 +33,8 @@ class El {
   get children() { return this.childNodes.filter((n) => n instanceof El); }
   get firstChild() { return this.childNodes[0] || null; }
   get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; }
+  get nextSibling() { const p = this.parentNode; return p ? p.childNodes[p.childNodes.indexOf(this) + 1] || null : null; }
+  removeChild(n) { this._drop(n); return n; }
   get previousElementSibling() {
     if (!this.parentNode) return null;
     const k = this.parentNode.children;

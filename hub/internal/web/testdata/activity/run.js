@@ -13,6 +13,8 @@ class D extends Date {
   static now() { return now; }
 }
 const timers = new Map();
+const ticks = [];
+const tickClock = () => { for (const f of ticks) f(); };
 let tid = 0;
 const ids = {};
 for (const id of ["actbody", "actbtn", "actclose", "actcount", "actsum", "app", "c-bg", "c-sub", "tab-bg", "tab-sub", "toast", "tok", "toksub", "tokturn"]) ids[id] = new El("div");
@@ -22,7 +24,7 @@ const sandbox = {
   window: {}, document: doc, Date: D, Math, JSON, Intl, Promise, Array, Set, Map,
   setTimeout: (fn, ms) => { const id = ++tid; timers.set(id, fn); return id; },
   clearTimeout: (id) => { timers.delete(id); },
-  setInterval: () => 1, clearInterval: () => {},
+  setInterval: (fn) => { ticks.push(fn); return 1; }, clearInterval: () => {},
   matchMedia: () => ({ matches: false }), localStorage: { getItem: () => null, setItem: () => {} },
   requestAnimationFrame: (fn) => fn(), CSS: { escape: (s) => s },
   location: { hash: "" }, navigator: { clipboard: { writeText: async (t) => { copied.push(t); } } },
@@ -208,6 +210,24 @@ list = [{ id: "sa-6", goal: "Sixth", status: "running", started_at: (now - 5000)
 await round();
 assert.strictEqual(rowTime("sa-6"), "18:00");
 assert.ok(rowTools("sa-6").includes("41 tools"), rowTools("sa-6"));
+// A draw that changes one row builds that row only: the nodes of the others stay the same ones, and a
+// draw that changes nothing keeps all of them. The clock of a running row moves without a build.
+const rowNode = (id) => body().querySelectorAll(".row").find((x) => x.dataset.act === id);
+const sa6 = rowNode("sa-6");
+const sa5 = rowNode("sa-5");
+act.event("subagent.start", { subagent_id: "sa-9", goal: "Ninth", model: "m" });
+assert.strictEqual(rowNode("sa-6"), sa6, "an unchanged running row kept its node after another row came");
+assert.strictEqual(rowNode("sa-5"), sa5, "an unchanged finished row kept its node");
+assert.ok(rowNode("sa-9"), "the new row is there");
+act.event("subagent.complete", { subagent_id: "sa-9", status: "completed" });
+assert.strictEqual(rowNode("sa-6"), sa6);
+assert.strictEqual(rowNode("sa-5"), sa5);
+assert.strictEqual(rowState("sa-9"), "Done");
+const before = rowTime("sa-6");
+now += 5000;
+tickClock();
+assert.strictEqual(rowNode("sa-6"), sa6, "the clock tick did not build the row");
+assert.notStrictEqual(rowTime("sa-6"), before, "the clock moved");
 // A page that missed the tool's event has only the list: it names the tool and what it was given.
 // With the command, the line opens to it; with the name alone there is no box and no raw tool name.
 const rowOf = (id) => body().querySelectorAll(".row").find((x) => x.dataset.act === id);
