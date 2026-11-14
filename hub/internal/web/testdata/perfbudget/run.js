@@ -44,6 +44,20 @@ const preload = `(() => {
   await c.load(url + "/auth/login?next=/%23/s/pc/" + SHORT, `document.querySelectorAll("#sessions .item").length >= 5 && document.getElementById("log").textContent.includes(${JSON.stringify(last(SHORT))})`, "the short chat");
   await c.frames(10);
 
+  // The hub follows each long chat first, as it does a chat it has shown:
+  // the first open of a chat since the hub started waits for Hermes, which
+  // is not the page's time (and is slow under the race detector).
+  for (const chat of LONG) {
+    await ev(`(async () => {
+      const ac = new AbortController();
+      const r = await fetch("/api/sessions/pc/${chat}/events", { signal: ac.signal });
+      const rd = r.body.getReader(); const dec = new TextDecoder(); let got = "";
+      while (!got.includes('"kind":"snapshot"')) { const { value, done } = await rd.read(); if (done) break; got += dec.decode(value, { stream: true }); }
+      ac.abort();
+      return 1;
+    })()`);
+  }
+
   // calibration: lay out a fixed block of 1,500 rows, five times.
   const cal = [];
   for (let i = 0; i < 5; i++) {
@@ -123,10 +137,10 @@ const preload = `(() => {
   if (report) console.log(JSON.stringify(out));
   // Budgets: a fixed part (frames) and a part that grows with the
   // calibration, about twice what a fast machine and one four times
-  // slower measured (back 18 and 36 ms, first open 40 and 90 ms, with
-  // calibrations of 13 and 53 ms).
+  // slower measured (back 18 and 36 ms, first open 25 to 40 and 90 ms,
+  // with calibrations of 13 and 53 ms).
   const backBudget = 25 + 1.5 * k;
-  const firstBudget = 40 + 3 * k;
+  const firstBudget = 25 + 2.5 * k;
   assert.ok(median(back) <= backBudget, `switching back took ${median(back).toFixed(1)} ms (median), budget ${backBudget.toFixed(1)} (calibration ${k.toFixed(1)} ms)`);
   assert.ok(median(first) <= firstBudget, `opening a long chat took ${median(first).toFixed(1)} ms (median), budget ${firstBudget.toFixed(1)} (calibration ${k.toFixed(1)} ms)`);
   // The hub answers a chat it holds, and the chat list, from memory.
