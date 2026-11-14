@@ -58,7 +58,7 @@ TALARIA_SEARXNG=1
 
 # --- Images ---
 # Another agent image, such as one you built or loaded (the default is pinned by digest)
-# TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p50
+# TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p54
 
 # --- Time zone of schedules and the agent's clock (IANA name, such as Europe/Berlin). Empty: UTC
 TZ=
@@ -195,7 +195,7 @@ telegram:
 images:
   hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.86@sha256:cf15c53e85f8555ba0ebc7d3377c5e974b72c8798000e5b3fab506bd299f4216
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
-  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p50@sha256:b240c7c74fc870a960eb32c8112e67cdabcff7c77cadfe0ef4f254fe7eac381d
+  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p54@sha256:e629740ecb26f5bee54d6b89cf334cc7ade15e22ceea526bcb692eef847edc61
   device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
   # -- The binary's file name at the root of the device image, for the image volume; "hermes-device" before v0.26.0
   deviceBinary: talaria
@@ -344,7 +344,7 @@ docker.io/pgvector/pgvector:0.8.1-pg17
 docker.io/searxng/searxng:2026.11.13-8a53a6aa5
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p50
+ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p54
 ghcr.io/usa-reddragon/talaria-hub:v0.26.86
 ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0
 ghcr.io/usa-reddragon/talaria:v0.26.0

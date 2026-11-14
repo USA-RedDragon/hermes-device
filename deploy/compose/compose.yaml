@@ -12,7 +12,7 @@ name: talaria
 x-images:
   hub: &hub-image ghcr.io/usa-reddragon/talaria-hub:v0.26.86@sha256:cf15c53e85f8555ba0ebc7d3377c5e974b72c8798000e5b3fab506bd299f4216
   # Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
-  hermes: &hermes-image ${TALARIA_HERMES_IMAGE:-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p50@sha256:b240c7c74fc870a960eb32c8112e67cdabcff7c77cadfe0ef4f254fe7eac381d}
+  hermes: &hermes-image ${TALARIA_HERMES_IMAGE:-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p54@sha256:e629740ecb26f5bee54d6b89cf334cc7ade15e22ceea526bcb692eef847edc61}
   device: &device-image ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
   sandbox: &sandbox-image ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0@sha256:95c0ad9f33ab6bb5f19064c4c9cca23b05b5b635b6fb10999d1895d843b81090
   # SearXNG, the agent's web search (https://docs.searxng.org)
