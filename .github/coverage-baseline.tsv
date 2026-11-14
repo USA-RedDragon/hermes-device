@@ -61,7 +61,7 @@ internal/claudeusage/timeline.go	96	86
 internal/config/config.go	86	76
 internal/config/load.go	18	17
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	710	627
+internal/device/device.go	710	628
 internal/device/mcp.go	69	60
 internal/device/signal_unix.go	1	1
 internal/diskfree/diskfree_linux.go	7	5
@@ -73,7 +73,7 @@ internal/hermesbuild/launch.go	65	62
 internal/hermesbuild/relocate.go	38	31
 internal/hubapi/hubapi.go	80	71
 internal/legacy/legacy.go	8	8
-internal/mcp/mcp.go	519	453
+internal/mcp/mcp.go	519	451
 internal/mcp/mcptest/fake.go	136	113
 internal/oci/extract.go	130	106
 internal/oci/ocitest/ocitest.go	127	118
