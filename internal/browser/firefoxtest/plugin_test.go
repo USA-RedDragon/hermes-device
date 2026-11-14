@@ -100,7 +100,8 @@ func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, p
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"scripts/test-plugin.sh", "-s", "plugin/device/tests", "-t", "plugin/device/tests", "-p", "test_browser_e2e.py", "-v"}
+	args := make([]string, 0, 8+2*len(only))
+	args = append(args, "scripts/test-plugin.sh", "-s", "plugin/device/tests", "-t", "plugin/device/tests", "-p", "test_browser_e2e.py", "-v")
 	for _, name := range only {
 		args = append(args, "-k", name)
 	}
