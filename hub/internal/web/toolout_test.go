@@ -28,7 +28,7 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 	small := `{"output": "ok", "exit_code": 0}`
 	page := `{"ok": true, "path": "/srv/p.html", "title": "` + strings.Repeat("t", 5000) + `"}`
 	call := func(id, name string) map[string]any {
-		return map[string]any{"id": id, fnKey: map[string]any{"name": name, ilArgs: "{}"}}
+		return map[string]any{"id": id, fnKey: map[string]any{fieldName: name, ilArgs: "{}"}}
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "cut", Title: "Cut", Live: true, StartedAt: 300, Messages: []map[string]any{
 		{kRole: roleUser, kText: "go"},
