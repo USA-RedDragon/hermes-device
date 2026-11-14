@@ -1522,3 +1522,5 @@ button.link svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; s
   .qpanel .grab { display: block; }
   .qpscrim:not([hidden]) { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 29; }
 }
+.tool-page { margin: .3rem 0; }
+.tool-page .media { margin: 0; }

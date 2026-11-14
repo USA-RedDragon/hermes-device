@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type toolPayload struct {
 	DurationS  *float64        `json:"duration_s"`
 	Summary    string          `json:"summary"`
 	ResultText string          `json:"result_text"`
+	Result     json.RawMessage `json:"result"`
 	Percent    *int            `json:"percent"`
 	Message    string          `json:"message"`
 }
@@ -149,6 +151,9 @@ type renderer struct {
 	gone func()
 	// prompts are the shown prompts by ID: their key and message.
 	prompts map[string]shownPrompt
+	// published are the pages of this turn's page_publish calls whose link
+	// was sent already.
+	published map[string]bool
 	// media opens a file a reply names; nil when the service cannot.
 	media func(ctx context.Context, path string) (*hub.MediaFile, error)
 	// pageURL is the hub URL that opens a page of the session: a PageID or
@@ -954,6 +959,26 @@ func (r *renderer) toolComplete(ctx context.Context, ev hub.Event) {
 	t.steps = append(t.steps, step)
 	t.counts[stepKind(p.Name)]++
 	r.refresh(ctx)
+	r.publishedPage(ctx, p)
+}
+
+// publishedPage sends the link of a page the agent published with
+// page_publish, so the user reaches it even when the reply does not name
+// the file. The reply's MEDIA line for the same file sends no second link.
+func (r *renderer) publishedPage(ctx context.Context, p toolPayload) {
+	if p.Name != "page_publish" || r.pageURL == nil {
+		return
+	}
+	file := hub.PublishedPage(p.Result, p.ResultText)
+	if file == "" || r.published[file] {
+		return
+	}
+	if r.published == nil {
+		r.published = map[string]bool{}
+	}
+	r.published[file] = true
+	r.flushAll(ctx)
+	r.sendPageFile(ctx, file, hub.CleanName(path.Base(file)))
 }
 
 // showPrompt sends an approval or a question with its buttons. A question
@@ -1109,6 +1134,8 @@ func (r *renderer) deliver(ctx context.Context, text string) {
 		}
 	}
 	r.sendPages(ctx, pages)
+	paths = slices.DeleteFunc(paths, func(x string) bool { return r.published[x] })
+	clear(r.published)
 	r.sendMedia(ctx, paths)
 }
 

@@ -580,8 +580,25 @@ window.HubToolCard = (() => {
     return out;
   }
 
+  // pagePublish is page_publish, which writes an HTML page for the user. A
+  // finished call that made a page names it in page ({ path, title }), so
+  // the card can show the page itself; the call and its output stay as
+  // blocks for a card that cannot.
+  function pagePublish(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    const out = { icon: "file", blocks: [] };
+    out.title = c.failed ? "Could not publish a page" : verb(c, "Published", "Publishing") + " a page";
+    out.status = "Done";
+    const p = str(res.path);
+    if (c.done && !c.failed && res.ok !== false && p[0] === "/" && /\.html?$/i.test(p)) out.page = { path: p, title: short(str(res.title)) };
+    if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
+    if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
   const handlers = {
-    terminal, process_manage: pm, delegate_task: delegate, agent_send: send, agent_peers: agentPeers, agent_set_name: agentName, search_files: search,
+    page_publish: pagePublish, terminal, process_manage: pm, delegate_task: delegate, agent_send: send, agent_peers: agentPeers, agent_set_name: agentName, search_files: search,
     read_file: read, write_file: edit, patch: edit, web_search: web, web_extract: web,
     memory: memoryTool, project_memory: projectMemory, skills_list: skill, skill_view: skill, skill_manage: skill,
     session_search: sessionSearch, browser_vault: vault, mcp_device_call: mcpCall, mcp_device_servers: mcpCall, mcp_device_tools: mcpCall,
@@ -769,6 +786,41 @@ window.HubToolCard = (() => {
     };
     box.append(head, live, wrap);
     const view = { node: box, body: extra, live, derived: null };
+    // A page_publish card that made a page shows the page card in place of
+    // the usual card, so the page opens from the chat. It is not a step
+    // that folds into a group.
+    let pageNode = null;
+    let pagePath = "";
+    function drawPage(d) {
+      const page = d.page && d.state === "ok" && ctx.page ? d.page : null;
+      if (page && pagePath !== page.path) {
+        const node = ctx.page(page);
+        if (node) {
+          pageNode = el("div", "media tool-page-card");
+          pageNode.append(node);
+          pagePath = page.path;
+        }
+      }
+      const on = !!page && !!pageNode;
+      if (!on && pageNode) {
+        pageNode.remove();
+        pageNode = null;
+        pagePath = "";
+      }
+      box.classList.toggle("tool", !on);
+      box.classList.toggle("notice", !on);
+      box.classList.toggle("tool-page", on);
+      head.hidden = on;
+      live.hidden = on;
+      wrap.hidden = on || head.getAttribute("aria-expanded") !== "true";
+      if (on) {
+        box.setAttribute("aria-label", d.title);
+        if (pageNode.parentNode !== box) box.append(pageNode);
+      } else {
+        box.removeAttribute("aria-label");
+      }
+      view.page = on ? page.path : "";
+    }
 
     function copyButton(text) {
       const b = window.HubIcons.button("copy", "Copy", "ghost ib tool-copy");
@@ -834,6 +886,7 @@ window.HubToolCard = (() => {
       title.title = d.title;
       drawMeta(d, c);
       blocks.replaceChildren(...d.blocks.map(drawBlock));
+      drawPage(d);
       return d;
     };
     view.update(c0);

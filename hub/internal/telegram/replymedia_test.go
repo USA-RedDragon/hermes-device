@@ -1,7 +1,9 @@
 package telegram_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -187,5 +189,41 @@ func TestTooLargeImageGoesAsADocument(t *testing.T) {
 	doc := h.tg.wait(mDocument, "")
 	if doc.Params["name"] != "shot.jpg" || len(h.tg.find(mPhoto, "")) != 0 {
 		t.Fatalf("document = %+v", doc.Params)
+	}
+}
+
+// A page_publish result is a link in the chat even when the reply does not
+// name the file; when it does, the link goes once.
+func TestPublishedPageIsALink(t *testing.T) {
+	t.Parallel()
+	file := "/opt/data/hermes/cache/pages/hermes-device/s1/page-0123456789abcdef.html"
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.media = map[string]fakeFile{file: {data: "<title>The tracker</title>"}}
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "p1", kName: "page_publish",
+		"result": `{"ok": true, "path": "` + file + `", "title": "The tracker", "show_user": "MEDIA:` + file + `"}`})
+	link := h.tg.wait(mSend, "The tracker")
+	if !strings.Contains(link.text(), "/"+sid+"/%2Fopt%2Fdata%2Fhermes%2Fcache%2Fpages%2Fhermes-device%2Fs1%2Fpage-0123456789abcdef.html\"") {
+		t.Fatalf("link = %q", link.text())
+	}
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Done.\nMEDIA:" + file, kStatus: statusComplete})
+	h.tg.wait(mSend, "Done.")
+	if n := len(h.tg.find(mSend, "Open the page in the hub")); n != 1 {
+		t.Fatalf("page links = %d, want 1", n)
+	}
+}
+
+func TestPublishedPageFailedHasNoLink(t *testing.T) {
+	t.Parallel()
+	for _, res := range []string{`{"ok": false, "path": "/opt/data/x/p.html"}`, `{"error": "no"}`, `/opt/data/x/p.html`, `{"ok": true, "path": "/opt/data/x/p.txt"}`} {
+		if got := hub.PublishedPage(json.RawMessage(strconv.Quote(res)), ""); got != "" {
+			t.Fatalf("%s: %q", res, got)
+		}
+	}
+	want := "/opt/data/x/p.html"
+	if got := hub.PublishedPage(nil, `{"ok": true, "path": "`+want+`"}`); got != want {
+		t.Fatalf("text result: %q", got)
 	}
 }

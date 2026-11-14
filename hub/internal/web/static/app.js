@@ -919,7 +919,8 @@
         node.append(row);
       }
       if (!final && pg.writing) node.append(el("div", "note page-wait", "Writing a page"));
-      if (final && m.paths.length) node.append(mediaRow(this.base, m.paths));
+      const paths = m.paths.filter((p) => !(this.published && this.published.has(p)));
+      if (final && paths.length) node.append(mediaRow(this.base, paths));
       if (final) this.when(node, this.at);
     }
 
@@ -1198,7 +1199,7 @@
       if (!this.known) this.known = window.HubToolCard.memory();
       const call = { name: name || "tool", args, res: null, out: "", done: false, failed: false, startedAt: this.at, endedAt: 0,
         duration: undefined, computer: this.computerName(), mem: this.known };
-      const view = window.HubToolCard.create({ el, toast, highlight: highlightBash, diff: diffView }, call);
+      const view = window.HubToolCard.create({ el, toast, highlight: highlightBash, diff: diffView, page: (p) => this.publishedPage(p) }, call);
       card = view.node;
       card.view = view;
       card.call = call;
@@ -1225,6 +1226,13 @@
       tn.reasoning = null;
       this.add(card);
       return card;
+    }
+
+    // publishedPage is the card of a page the agent published. The reply
+    // that names the same file shows no second card.
+    publishedPage(p) {
+      (this.published || (this.published = new Set())).add(p.path);
+      return pageCard(this.base, p);
     }
 
     // waitingNotes marks the memory cards that still run as waiting for the
@@ -2027,7 +2035,7 @@
   // page is { html } for a page block or { path } for an HTML file.
   function pageCard(base, page) {
     const card = el("div", "page-card");
-    const name = el("span", "name", page.html !== undefined ? pageTitle(page.html) || "Page" : baseName(page.path));
+    const name = el("span", "name", page.html !== undefined ? pageTitle(page.html) || "Page" : page.title || baseName(page.path));
     const kind = el("span", "kind", "Page");
     const open = el("button", "primary", "Open");
     open.type = "button";
@@ -3828,7 +3836,8 @@
     if (view && view.backend === j.b && view.session === j.s) view.jumpTo();
   },
     closeSide: () => openSide(false) });
-  const activity = window.HubActivity({ api, el, showText, drawn: () => drawSubs(), highlight: highlightBash, diff: diffView });
+  const activity = window.HubActivity({ api, el, showText, drawn: () => drawSubs(), highlight: highlightBash, diff: diffView,
+    page: (p) => (view ? pageCard(view.base, p) : null) });
   const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); else if (page) pageIdle(); } });
   const claudeCode = window.HubClaudeCode({ api, el });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",

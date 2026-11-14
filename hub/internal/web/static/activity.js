@@ -7,7 +7,8 @@
 // /bg prompts come from background.start (sent by the hub) and
 // background.complete. ctx gives it the app's api, el, banner, chat (the
 // open Chat or null), showText (a dialog with a long text), words, and the
-// chat's toast, highlight and diff for the tool cards of a subagent's steps.
+// chat's toast, highlight, diff and page (the card of a published page)
+// for the tool cards of a subagent's steps.
 // An open subagent row shows its steps as a small chat (minichat.js), read
 // from GET .../subagents/{id}/events after the last seq it holds.
 window.HubActivity = (ctx) => {
@@ -418,7 +419,7 @@ window.HubActivity = (ctx) => {
   function mini(r) {
     let m = S.minis.get(r.id);
     if (!m) {
-      m = { view: window.HubMiniChat.create({ el, toast, highlight: ctx.highlight, diff: ctx.diff }), seq: 0, epoch: null,
+      m = { view: window.HubMiniChat.create({ el, toast, highlight: ctx.highlight, diff: ctx.diff, page: ctx.page }), seq: 0, epoch: null,
         busy: false, done: false, top: 0, end: true };
       S.minis.set(r.id, m);
       m.view.empty("Loading the steps…");
@@ -782,7 +783,7 @@ window.HubActivity = (ctx) => {
     const m = S.minis.get(r.id);
     const d = el("dialog", "picker steps");
     d.append(el("h2", "", r.goal || "Subagent"));
-    const v = window.HubMiniChat.create({ el, toast, highlight: ctx.highlight, diff: ctx.diff, full: true });
+    const v = window.HubMiniChat.create({ el, toast, highlight: ctx.highlight, diff: ctx.diff, page: ctx.page, full: true });
     const body = el("div", "pbody");
     body.append(v.node);
     const foot = el("div", "pfoot");

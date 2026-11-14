@@ -9,7 +9,8 @@
 // and a pill counts the new steps.
 // The pure parts (order, steerState, steps, near, pill, end) are run by a
 // node test. create(ctx) builds a view; ctx: el, toast(text),
-// highlight(code), diff(text), full (no height cap).
+// highlight(code), diff(text), page(page) (the card of a published page),
+// full (no height cap).
 window.HubMiniChat = (() => {
   const nearPx = 48;
   const noteLen = 160;
@@ -129,7 +130,7 @@ window.HubMiniChat = (() => {
       if (!st.known) st.known = window.HubToolCard.memory();
       const call = { name: e.name || "tool", args: e.args || null, res: null, out: "", done: false, failed: false,
         startedAt: ms(e.ts), endedAt: 0, duration: undefined, mem: st.known, batch: o.batch || "" };
-      const v = window.HubToolCard.create({ el, toast: ctx.toast || (() => {}), highlight: ctx.highlight, diff: ctx.diff || ((t) => el("pre", "", t)) }, call);
+      const v = window.HubToolCard.create({ el, toast: ctx.toast || (() => {}), highlight: ctx.highlight, diff: ctx.diff || ((t) => el("pre", "", t)), page: ctx.page }, call);
       const node = v.node;
       node.view = v;
       node.call = call;

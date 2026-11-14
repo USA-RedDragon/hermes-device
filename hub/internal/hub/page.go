@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"html"
 	"path"
@@ -158,4 +160,33 @@ func PageTitle(page string) string {
 		t = string(r[:119]) + "…"
 	}
 	return t
+}
+
+// PublishedPage is the HTML file a finished page_publish call published:
+// the path in its result ({"ok": true, "path": ...}), which is the call's
+// result as a JSON object or a string of one, or its result text. It is ""
+// when the call failed or the path is not a page the hub serves.
+func PublishedPage(result json.RawMessage, text string) string {
+	var res struct {
+		OK   *bool  `json:"ok"`
+		Path string `json:"path"`
+	}
+	for _, raw := range [][]byte{result, []byte(text)} {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) > 0 && raw[0] == '"' {
+			var s string
+			if json.Unmarshal(raw, &s) != nil {
+				continue
+			}
+			raw = []byte(strings.TrimSpace(s))
+		}
+		res.OK, res.Path = nil, ""
+		if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &res) != nil {
+			continue
+		}
+		if (res.OK == nil || *res.OK) && PagePath(res.Path) {
+			return res.Path
+		}
+	}
+	return ""
 }

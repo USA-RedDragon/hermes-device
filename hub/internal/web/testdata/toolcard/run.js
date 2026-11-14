@@ -14,6 +14,7 @@ for (const c of JSON.parse(fs.readFileSync(cases, "utf8"))) {
   if (call.res === undefined) call.res = null;
   const got = derive(call);
   const seen = { icon: got.icon, title: got.title, status: got.status, state: got.state };
+  if (c.want.page !== undefined) seen.page = got.page || null;
   if (c.blocks) seen.blocks = got.blocks.map((b) => b.label);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(seen)), c.want, c.name);
 }
