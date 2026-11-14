@@ -52,6 +52,8 @@
   "want": {"icon": "compass", "title": "Message to subagent: sa-3", "status": "Failed: No live subagent 'sa-3' in this conversation's spawn tree.", "state": "bad"}},
  {"name": "message to a chat", "call": {"name": "agent_send", "args": {"to": "build", "text": "hi"}, "res": {"message_id": "am_1", "to": "build", "delivery": "queued"}},
   "blocks": true, "want": {"icon": "mail", "title": "Sent a message to chat build", "status": "Queued", "state": "ok", "blocks": ["Message"]}},
+ {"name": "message to a chat the hub named", "call": {"name": "agent_send", "args": {"to": "talaria-platform", "text": "hi"}, "res": {"message_id": "am_3", "to": "chat 'talaria-platform' (session 20261112_103549_47fb42)", "delivery": "queued"}},
+  "want": {"icon": "mail", "title": "Sent a message to chat 'talaria-platform' (session 20261112_103549_47fb42)", "status": "Queued", "state": "ok"}},
  {"name": "message to the parent", "call": {"name": "agent_send", "args": {"to": "parent", "text": "done"}, "res": {"message_id": "am_2", "to": "parent", "delivery": "delivered"}},
   "want": {"icon": "mail", "title": "Sent a message to the parent chat", "status": "Delivered", "state": "ok"}},
  {"name": "search files with matches", "call": {"name": "search_files", "args": {"pattern": "TODO", "path": "internal"}, "res": {"total_count": 3, "matches": [{"path": "a.go", "line": 1}, {"path": "a.go", "line": 2}, {"path": "b.go", "line": 3}]}},

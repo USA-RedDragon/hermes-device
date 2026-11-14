@@ -323,7 +323,9 @@ window.HubToolCard = (() => {
     const res = isObj(c.res) ? c.res : {};
     const to = str(a.to);
     const out = { icon: "mail", blocks: [] };
-    const label = str(res.to) || to;
+    // The hub names the peer in the result as "chat 'name' (session id)"; the
+    // title says "chat" itself.
+    const label = (str(res.to) || to).replace(/^chat\s+/, "");
     const m = verb(c, "Sent a message to ", "Sending a message to ");
     out.title = to === "parent" ? m + "the parent chat" : /^sa-/.test(to) ? m + "subagent " + short(label) : m + (label ? "chat " + short(label) : "a chat");
     out.status = str(res.delivery) ? upperFirst(squash(res.delivery)) : "Sent";

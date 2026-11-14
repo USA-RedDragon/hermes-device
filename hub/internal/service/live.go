@@ -672,7 +672,7 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		(!ls.truncated || len(ls.ring) == 0 || ls.ring[0].Seq <= sinceSeq+1)
 	switch {
 	case sinceSeq == hub.SinceNow && !ls.truncated:
-		v.ch <- ls.snapshot
+		v.ch <- ls.snapshotWithPrompts()
 		ls.send(v, ls.turnStartSeq())
 	case covered:
 		ls.send(v, sinceSeq)
@@ -685,11 +685,12 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		// Until it comes the viewer gets the held one to show at once: a
 		// fresh snapshot waits for Hermes, a second on a big chat.
 		if ls.snapshot.Kind == hub.KindSnapshot {
-			v.ch <- hub.Event{Kind: hub.KindSnapshot, Data: ls.snapshot.Data, At: ls.snapshot.At, Provisional: true}
+			held := ls.snapshotWithPrompts()
+			v.ch <- hub.Event{Kind: hub.KindSnapshot, Data: held.Data, At: held.At, Provisional: true}
 		}
 		ls.resnapshotLocked()
 	default:
-		v.ch <- ls.snapshot
+		v.ch <- ls.snapshotWithPrompts()
 		ls.send(v, 0)
 	}
 	ls.viewers[v] = struct{}{}
@@ -698,6 +699,43 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		ls.idleTimer = nil
 	}
 	return v.ch, func() { ls.detach(v) }
+}
+
+// snapshotWithPrompts is the held snapshot with the prompts the hub holds
+// now. The snapshot lists the prompts of when it was taken, and the buffer
+// replays only the turn that runs, so an approval a subagent asked for in a
+// turn that has ended (it waits on the chat, not on a turn) reached a new
+// viewer through neither, while the chat list still showed the badge for
+// it. ls.mu is held.
+func (ls *live) snapshotWithPrompts() hub.Event {
+	ev := ls.snapshot
+	if ev.Kind != hub.KindSnapshot {
+		return ev
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(ev.Data, &m) != nil || m == nil {
+		return ev
+	}
+	ids := make([]string, 0, len(ls.prompts))
+	for id := range ls.prompts {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	list := make([]gateway.Prompt, 0, len(ids))
+	for _, id := range ids {
+		list = append(list, ls.prompts[id])
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return ev
+	}
+	m["prompts"] = raw
+	data, err := json.Marshal(m)
+	if err != nil {
+		return ev
+	}
+	ev.Data = data
+	return ev
 }
 
 // turnStartSeq is the seq of the last turn end in the buffer, so the

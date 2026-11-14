@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/USA-RedDragon/talaria/hub/internal/service"
 )
@@ -127,5 +128,91 @@ func TestResumeSettlesLostApprovalsAndOffersNewOnes(t *testing.T) {
 		if _, err := e.svc.PendingPrompt(ctx, userAlice, backendPC, sLive, id); err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
+	}
+}
+
+// An answer Hermes refuses as stale (it restarted since it asked) drops the
+// prompt, so the chat list stops showing an approval no card can answer.
+func TestStaleApprovalAnswerClearsPromptAndBadge(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	e.gw.AddSession(&gatewaytest.Session{ID: "s-stale", Title: "Stale", Live: true, StartedAt: 1200, Running: true,
+		Prompts: []gateway.Prompt{approvalPrompt("ap-old")}})
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, "s-stale", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, ch)
+	needs := func() string {
+		ss, err := e.svc.Sessions(ctx, userAlice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range ss {
+			if s.ID == "s-stale" {
+				return s.Needs
+			}
+		}
+		return "missing"
+	}
+	if got := needs(); got != hub.NeedsApproval {
+		t.Fatalf("needs = %q before the answer", got)
+	}
+	e.gw.StaleApprovals = true
+	if err := e.svc.RespondApproval(ctx, userAlice, backendPC, "s-stale", "ap-old", true); !errors.Is(err, hub.ErrUnknownApproval) {
+		t.Fatalf("answer = %v, want unknown approval", err)
+	}
+	if got := needs(); got != "" {
+		t.Fatalf("needs = %q after a stale answer, want none", got)
+	}
+}
+
+// An approval a subagent asked for in a turn that has ended still has a
+// card for a viewer that opens the chat later.
+func TestNewViewerGetsApprovalOfEndedTurn(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	first, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, first)
+	goal := "tidy the repo"
+	sub := approvalPrompt("ap-sub")
+	sub.Subagent = &goal
+	e.gw.Ask(sLive, sub)
+	e.gw.Ask(sLive, approvalPrompt("ap-turn"))
+	e.gw.AnswerElsewhere(sLive, "ap-turn", gateway.ChoiceOnce)
+	for deadline := time.After(5 * time.Second); ; {
+		select {
+		case ev := <-first:
+			if ev.Kind != hub.KindMessageComplete {
+				continue
+			}
+		case <-deadline:
+			t.Fatal("the turn did not end")
+		}
+		break
+	}
+	second, stop2, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, hub.SinceNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop2()
+	ev := next(t, second)
+	var snap struct {
+		Prompts []struct {
+			ID string `json:"prompt_id"`
+		} `json:"prompts"`
+	}
+	if ev.Kind != hub.KindSnapshot || json.Unmarshal(ev.Data, &snap) != nil {
+		t.Fatalf("first event = %s", ev.Kind)
+	}
+	if len(snap.Prompts) != 1 || snap.Prompts[0].ID != "ap-sub" {
+		t.Fatalf("snapshot prompts = %+v, want only the subagent's ap-sub", snap.Prompts)
 	}
 }

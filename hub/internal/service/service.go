@@ -754,6 +754,21 @@ func (s *Service) AnswerPrompt(ctx context.Context, user, backendID, sessionID, 
 		Status string `json:"status"`
 	}
 	err = b.call(ctx, ls, method, params, &res)
+	var rpcErr *gateway.RPCError
+	if errors.As(err, &rpcErr) && rpcErr.Message == gateway.ReasonStaleGeneration {
+		// Hermes restarted since it asked: the prompt is dead and no answer
+		// can reach it. Keeping it would keep the chat's badge for a card
+		// that cannot work.
+		if recorded {
+			s.forgetAnswer(ctx, backendID, promptID, answer)
+		}
+		ls.mu.Lock()
+		if _, ok := ls.prompts[promptID]; ok {
+			ls.lostPrompts([]string{promptID})
+		}
+		ls.mu.Unlock()
+		return hub.ErrUnknownApproval
+	}
 	resolved := err == nil && res.Status == "already_resolved"
 	if (err != nil || resolved) && recorded {
 		s.forgetAnswer(ctx, backendID, promptID, answer)

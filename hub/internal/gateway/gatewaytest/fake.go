@@ -167,6 +167,9 @@ type Gateway struct {
 	logins   int
 	// HoldTurns stops prompt.submit from running its scripted turn.
 	HoldTurns bool
+	// StaleApprovals makes approval.respond refuse with stale_generation, as
+	// a restarted Hermes does for a prompt of its earlier run.
+	StaleApprovals bool
 	// ReplayMax bounds each session's replay ring as Hermes does
 	// (tui_gateway/event_replay.py _REPLAY_BUFFER_MAX, 512): older events
 	// are dropped, and session.events.since from before them answers
@@ -1366,6 +1369,9 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 		return nil, errInvalidParams, nil
 	}
 	s := g.sessions[str(p, kSessionID)]
+	if g.StaleApprovals {
+		return nil, "stale_generation", nil
+	}
 	pr, ok := s.prompts[str(p, "prompt_id")]
 	if !ok {
 		return map[string]any{kStatus: "already_resolved"}, "", nil
