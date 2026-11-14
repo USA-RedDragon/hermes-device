@@ -1041,6 +1041,129 @@ def notes(slug: str) -> dict:
                         "user": {"file": "", "limit": 0, "used": 0, "enabled": False, "entries": []}}}
 
 
+# --- project skills routes ---------------------------------------------------------------------------
+
+SKILL_FILE = "SKILL.md"
+MAX_SKILL_VIEW = 200_000
+
+
+def _frontmatter(text: str) -> dict[str, str]:
+    """The ``name`` and ``description`` of a SKILL.md front matter; empty strings when it has none."""
+    out = {"name": "", "description": ""}
+    lines = text.replace("\r\n", "\n").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return out
+    block = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        block.append(line)
+    try:
+        import yaml
+        doc = yaml.safe_load("\n".join(block))
+    except Exception:
+        doc = None
+    if not isinstance(doc, dict):  # no PyYAML, or unreadable YAML: take the one-line scalars
+        doc = {}
+        for line in block:
+            key, sep, value = line.partition(":")
+            if sep and key in out and not line[:1].isspace():
+                doc[key] = value.strip().strip("\"'")
+    if isinstance(doc, dict):
+        for key in out:
+            if isinstance(doc.get(key), str):
+                out[key] = " ".join(doc[key].split())
+    return out
+
+
+def _disabled_skills() -> set[str]:
+    cfg = _config()
+    skills = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
+    disabled = skills.get("disabled")
+    return {str(n) for n in disabled} if isinstance(disabled, list) else set()
+
+
+def _project_skills(slug: str) -> list[dict]:
+    """Each skill under the project's skills dir: its name, the folder it sits in, its description, whether it
+    is on (Hermes keeps one off-list of skill names for global and project skills alike)."""
+    root = skills_dir(slug)
+    if root is None or not root.is_dir():
+        return []
+    off = _disabled_skills()
+    found = []
+    try:
+        mds = sorted(root.rglob(SKILL_FILE))
+    except OSError:
+        return []
+    for md in mds:
+        rel = md.parent.relative_to(root)
+        if md.is_symlink() or any(part.startswith(".") for part in rel.parts) or not rel.parts:
+            continue
+        try:
+            head = _frontmatter(md.read_text(encoding="utf-8", errors="replace")[:20000])
+        except OSError:
+            continue
+        name = head["name"] or rel.name
+        found.append({"name": name, "path": rel.as_posix(), "description": head["description"],
+                      "enabled": name not in off})
+    found.sort(key=lambda s: (s["name"].lower(), s["path"]))
+    return found
+
+
+def project_skills(slug: str) -> dict:
+    meta = _meta_or_404(slug)
+    return {"project": {"id": slug, "identity": meta["identity"], "name": str(meta.get("name") or slug)},
+            "skills": _project_skills(slug)}
+
+
+def _skill_dir(slug: str, name: Any) -> tuple[Path, dict]:
+    _meta_or_404(slug)
+    if not isinstance(name, str) or not name.strip():
+        raise Refused(400, "bad_request", "the skill name must not be empty")
+    for s in _project_skills(slug):
+        if name in (s["name"], s["path"]):
+            root = skills_dir(slug)
+            path = (root / s["path"]).resolve()
+            if root.resolve() not in path.parents:
+                break
+            return path, s
+    raise Refused(404, "unknown_skill", "This project has no such skill.")
+
+
+def project_skill(slug: str, name: Any) -> dict:
+    """One project skill with its SKILL.md text (cut at MAX_SKILL_VIEW characters) and the other files in it."""
+    path, s = _skill_dir(slug, name)
+    try:
+        text = (path / SKILL_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        raise Refused(404, "unknown_skill", "This project has no such skill.")
+    files = sorted(p.relative_to(path).as_posix() for p in path.rglob("*")
+                   if p.is_file() and p.name != SKILL_FILE and not p.is_symlink())[:50]
+    return {**s, "content": text[:MAX_SKILL_VIEW], "truncated": len(text) > MAX_SKILL_VIEW, "files": files}
+
+
+def delete_project_skill(slug: str, name: Any) -> dict:
+    """Delete a project skill's folder (and the category folder it leaves empty); answer with the project's skills."""
+    import shutil
+    path, _s = _skill_dir(slug, name)
+    root = skills_dir(slug).resolve()
+    with _LOCK:
+        shutil.rmtree(path)
+        parent = path.parent
+        while parent != root and root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+    return project_skills(slug)
+
+
 def _check_text(*texts: Any) -> None:
     for t in texts:
         if not isinstance(t, str) or not t.strip():

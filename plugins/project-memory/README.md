@@ -33,6 +33,8 @@ registers the project of each session with Hermes; `skill_manage` then takes `sc
 - With the device plugin's skill mirror configured, project skills are committed to the same repository under
   `projects/<slug>/<skill>`.
 - The hub's project list carries `skills`, the number of project skills.
+- Hub routes (under `/api/plugins/project-memory`): `GET /projects/<slug>/skills` lists them (name, folder, description,
+  on or off), `GET /projects/<slug>/skills/<name>` returns one with its SKILL.md text, `DELETE` removes it.
 
 `scripts/audit-global-skills.py` (in the plugins directory) lists global skills that look project-specific, as a
 read-only report.

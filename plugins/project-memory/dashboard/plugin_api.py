@@ -1,5 +1,5 @@
 """project-memory routes for hermes-hub, mounted at /api/plugins/project-memory/ behind dashboard sign-in: the
-projects, the staged project writes in Hermes's memory approval queue, and one project's notes in the shape of the device plugin's /memory with the same four changes."""
+projects, their skills, the staged project writes in Hermes's memory approval queue, and one project's notes in the shape of the device plugin's /memory with the same four changes."""
 from __future__ import annotations
 
 import asyncio
@@ -58,6 +58,21 @@ async def pending():
 @router.get("/projects/{project_id}")
 async def project_notes(project_id: str):
     return await _call(_core().notes, project_id)
+
+
+@router.get("/projects/{project_id}/skills")
+async def project_skills(project_id: str):
+    return await _call(_core().project_skills, project_id)
+
+
+@router.get("/projects/{project_id}/skills/{name:path}")
+async def project_skill(project_id: str, name: str):
+    return await _call(_core().project_skill, project_id, name)
+
+
+@router.delete("/projects/{project_id}/skills/{name:path}")
+async def project_skill_delete(project_id: str, name: str):
+    return await _call(_core().delete_project_skill, project_id, name)
 
 
 @router.post("/projects/{project_id}/memory/{op}")
