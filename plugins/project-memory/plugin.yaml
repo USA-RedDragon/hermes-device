@@ -1,6 +1,6 @@
 name: project-memory
 kind: standalone
-version: 0.3.0
+version: 0.3.1
 description: One curated memory per project (the git repository of a chat's bound device folder), as the project_memory tool and a system prompt block next to the global memory, with routes for hermes-hub's Memory page
 author: Talaria contributors
 requires_hermes: ">=0.22.5"

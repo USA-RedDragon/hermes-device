@@ -24,10 +24,12 @@ plugins:
   entries:
     project-memory:
       settings:
-        char_limit: 3000   # optional; default: memory.memory_char_limit, at most 3000 (the prompt section's room)
+        char_limit: 8000   # optional; default: memory.memory_char_limit; either is held between 200 and 32000
         write_approval: false   # optional; true or false overrides memory.write_approval for project notes only; unset follows it
 ```
 
 `write_approval: false` saves project notes directly while Hermes's own memory stays gated. `true` stages them even when `memory.write_approval` is off. Writes already staged under `/memory pending` stay staged; only new writes follow the setting. Background review still stages patch, replace and remove.
+
+The prompt holds at most 4,000 characters of project notes (Hermes's cap for a plugin section). When the notes are longer, the prompt shows the entries that fit, in order, and says how many it left out; the agent reads the rest with `project_memory action read`. Keep the entries the agent needs in every turn first.
 
 Notes live in `$HERMES_HOME/project-memories/<slug>/MEMORY.md`, with `meta.json` beside it.

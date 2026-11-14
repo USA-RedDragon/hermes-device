@@ -106,10 +106,23 @@ def test_replace_all(mem):
 
 def test_char_limit_setting(pm):
     assert pm.char_limit({}) == 2200
-    assert pm.char_limit({"memory": {"memory_char_limit": 8000}}) == 3000  # capped by the prompt section
+    assert pm.char_limit({"memory": {"memory_char_limit": 8000}}) == 8000
+    assert pm.char_limit({"memory": {"memory_char_limit": 100000}}) == pm.MAX_CHAR_LIMIT == 32000
     cfg = {"plugins": {"entries": {"project-memory": {"settings": {"char_limit": 500}}}}}
     assert pm.char_limit(cfg) == 500
     assert pm.char_limit({"plugins": {"entries": {"project-memory": {"settings": {"char_limit": 5}}}}}) == 200
+
+
+def test_long_entry_under_global_limit(mem, monkeypatch):
+    monkeypatch.setattr(mem, "_config", lambda: {"memory": {"memory_char_limit": 8000}})
+    slug = project(mem)
+    mem.add(slug, "x" * 6000)
+    assert len(mem.entries(slug)[0]) == 6000
+    assert mem.session_store("s1", slug).memory_char_limit == 8000
+    monkeypatch.setattr(mem, "_config", lambda: {"memory": {"memory_char_limit": 9000}})
+    assert mem.session_store("s1", slug).memory_char_limit == 9000  # a live session picks up a new limit
+    block = mem.render_block(slug)
+    assert "[66%, 6,000/9,000 chars]" in block and "1 more project notes are not shown" in block
 
 
 def test_prompt_block(mem):

@@ -47,8 +47,9 @@ MEMORY_FILE = "MEMORY.md"
 
 KIND_REMOTE, KIND_ROOT, KIND_FOLDER = "remote", "root", "folder"
 MIN_CHAR_LIMIT = 200
-# A plugin section holds at most 4,000 chars; the note, the header and the frame take the rest.
-MAX_CHAR_LIMIT = 3000
+# A sanity bound on the notes' size. The system prompt section holds at most 4,000 chars (Hermes's own cap), so
+# notes past SECTION_BUDGET stay on disk and the agent reads them with the tool; render_block says how many.
+MAX_CHAR_LIMIT = 32000
 SECTION_BUDGET = 3990
 MAX_LABEL = 200
 MAX_ALIASES_SHOWN = 3
@@ -537,7 +538,7 @@ def _config() -> dict:
 
 
 def char_limit(cfg: Optional[dict] = None) -> int:
-    """The plugin's ``char_limit`` setting, else the global memory_char_limit, at most MAX_CHAR_LIMIT."""
+    """The plugin's ``char_limit`` setting, else the global memory_char_limit, at most MAX_CHAR_LIMIT (a sanity bound)."""
     cfg = _config() if cfg is None else cfg
     settings = (((cfg.get("plugins") or {}).get("entries") or {}).get(PLUGIN) or {}).get("settings") or {}
     value = settings.get("char_limit") if isinstance(settings, dict) else None
