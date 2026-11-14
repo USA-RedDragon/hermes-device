@@ -792,6 +792,15 @@
     return s;
   })();
 
+  // Older rows render as the reader nears them (Chat.topUp), and all of
+  // them for a search of the page: the browser finds only what the page
+  // holds, and its find bar opens after this key.
+  $("log").addEventListener("scroll", () => { if (view && view.older.length) view.topUp(); }, { passive: true });
+  document.addEventListener("keydown", (e) => {
+    const k = (e.key || "").toLowerCase();
+    if (view && view.older.length && (((e.ctrlKey || e.metaKey) && !e.altKey && (k === "f" || k === "g")) || e.key === "F3")) view.fillOlder();
+  }, { capture: true, passive: true });
+
   // vreport tells the hub when the chat shown leaves its newest message and
   // the reader did nothing in it, at any time, at most once every 30 s. A
   // reader who lands on older messages after a switch or a restart should
@@ -805,6 +814,8 @@
   const firstChars = 30000;
   const olderRows = 60;
   const olderChars = 60000;
+  // olderAhead is how many screens above the reader older rows render.
+  const olderAhead = 2;
 
   // olderCut is where the rows to render next start: back from end until
   // they have rows rows and chars characters, then back to the user
@@ -1602,7 +1613,7 @@
       if (window.HubReconcile.restore(this.log, kept, (p) => rowTop(this.log, p.row))) stick.look();
       else this.bottom();
       this.jumpTo();
-      this.fillOlder();
+      this.topUp();
       if (view === this) restoreView(this);
       if (view === this) stick.drawn();
     }
@@ -1617,7 +1628,7 @@
         const kept = this.afterOlder;
         this.afterOlder = undefined;
         this.place(kept);
-      } else if (idle) this.fillOlder();
+      } else if (idle) this.topUp();
     }
 
     // showOlder renders older history that the snapshot left out above
@@ -1663,8 +1674,27 @@
       if (view === this) msgActs.decorate();
     }
 
+    // topUp renders the next older rows while the reader is within
+    // olderAhead screens of the top of what the log shows, or the log does
+    // not fill that much yet. History renders as the reader scrolls up, not
+    // all of it in the background: a long chat kept tens of thousands of
+    // nodes in the page, and each change laid them out and styled them.
+    topUp() {
+      if (this.toppingUp || !this.older.length) return;
+      this.toppingUp = true;
+      const gen = this.olderGen;
+      requestAnimationFrame(() => {
+        this.toppingUp = false;
+        if (view !== this || gen !== this.olderGen || !this.older.length || this.log.hidden) return;
+        if (this.log.scrollTop > olderAhead * this.log.clientHeight) return;
+        this.showOlder();
+        this.topUp();
+      });
+    }
+
     // fillOlder renders the rest of the history in the background, a few
-    // turns at a time, so the newest messages show first.
+    // turns at a time: for a search of the page (Ctrl+F), which finds only
+    // what the page holds.
     fillOlder() {
       const gen = this.olderGen;
       const step = () => {
