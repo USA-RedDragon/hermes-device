@@ -35,7 +35,7 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 		{kRole: roleAssistant, kText: "", kCalls: []any{call("t1", toolTerminal), call("t2", toolTerminal), call("t3", "page_publish")}},
 		{kRole: stepTool, kCallID: "t1", fieldName: toolTerminal, kText: whole},
 		{kRole: stepTool, kCallID: "t2", fieldName: toolTerminal, kText: small},
-		{kRole: stepTool, kCallID: "t3", "name": "page_publish", kText: page},
+		{kRole: stepTool, kCallID: "t3", fieldName: "page_publish", kText: page},
 		{kRole: roleAssistant, kText: "finished"},
 	}})
 	e.gw.AddSession(&gatewaytest.Session{ID: "elsewhere", Title: titleOther, Live: true, StartedAt: 301, Messages: []map[string]any{
