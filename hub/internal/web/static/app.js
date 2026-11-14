@@ -756,12 +756,12 @@
       s.heard(400);
       if (e.deltaY < 0 && s.pinned()) s.release();
     }, { passive: true });
-    log.addEventListener("touchstart", () => { swiped = false; }, { passive: true });
+    log.addEventListener("touchstart", () => { swiped = false; s.drag(true); }, { passive: true });
     // A touch only says the reader may scroll; whether the reader left the
     // end is for the scroll events to tell (a tap or a long press that
     // moves a pixel is not a scroll).
     log.addEventListener("touchmove", () => { swiped = true; s.heard(8000); }, { passive: true });
-    const lifted = () => s.heard(swiped ? 3000 : 1);
+    const lifted = () => { s.heard(swiped ? 3000 : 1); s.drag(false); };
     log.addEventListener("touchend", lifted, { passive: true });
     log.addEventListener("touchcancel", lifted, { passive: true });
     let down = false;

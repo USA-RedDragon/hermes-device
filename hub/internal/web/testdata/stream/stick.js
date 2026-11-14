@@ -376,5 +376,59 @@ const wheelTo = (x, top) => {
   assert.strictEqual(rafs.length, 1, "twenty scroll events of a frame queue one pass");
   assert.strictEqual(reads, 0, "no read before the frame");
 }
+
+// A finger drags a log at its end up a few pixels a frame while a reply
+// streams: no frame puts it back at the end, so it leaves the end; a drag
+// that stays within reach of the end is put there once the finger and its
+// fling are done.
+{
+  const rafs = [];
+  const log = new Log([500, 500, 500], 600);
+  let t = 0;
+  const s = HubStick(log, { probe: () => null, place: () => null, now: () => t, raf: (f) => rafs.push(f) });
+  const run = () => { const q = rafs.splice(0); for (const f of q) f(); };
+  s.pin();
+  t = 5000;
+  s.drag(true);
+  s.heard(8000);
+  let last = log.scrollTop;
+  for (let i = 0; i < 20; i++) {
+    log.scrollTop = log.scrollTop - 4;
+    s.scrollSoon();
+    log.heights[2] += 10;
+    s.pinSoon();
+    s.sync();
+    run();
+    t += 16;
+    assert.ok(log.scrollTop <= last, "the drag was undone at frame " + i);
+    last = log.scrollTop;
+  }
+  assert.strictEqual(s.pinned(), false, "eighty pixels up leave the end");
+  s.drag(false);
+  t += 500;
+  run();
+  assert.strictEqual(log.scrollTop, last, "a log that left the end stays after the finger lifts");
+  // Back at the end, and a small drag that stays within reach of it.
+  s.pin();
+  s.drag(true);
+  log.scrollTop -= 6;
+  s.scrollSoon();
+  log.heights[2] += 30;
+  s.pinSoon();
+  run();
+  assert.ok(log.scrollHeight - log.scrollTop - log.clientHeight > 30, "no pin under the finger");
+  s.drag(false);
+  t += 100;
+  log.scrollTop -= 2; // the fling's last event
+  s.scrollSoon();
+  run();
+  assert.ok(log.scrollHeight - log.scrollTop - log.clientHeight > 1, "no pin during the fling");
+  t += 200;
+  s.pinSoon();
+  run();
+  run();
+  assert.strictEqual(log.scrollTop, log.scrollHeight - log.clientHeight, "the log is at its end once the fling is over");
+  assert.strictEqual(s.pinned(), true);
+}
 console.log("ok");
 })();

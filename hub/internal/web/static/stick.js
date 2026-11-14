@@ -71,8 +71,8 @@ window.HubStick = (log, o) => {
     flushScroll();
     if (log.hidden) { changed(); return; }
     if (pinned) {
-      if (gap() >= 1) set(log.scrollHeight);
-      else note();
+      if (gap() < 1) note();
+      else if (held()) { note(); pinSoon(); } else set(log.scrollHeight);
       return;
     }
     const at = anchor ? o.place(anchor.n, log) : null;
@@ -125,12 +125,31 @@ window.HubStick = (log, o) => {
     scrolled(from);
   }
   function scrollSoon() {
+    // A fling goes on after the finger lifts: each of its scroll events
+    // keeps the log the reader's a little longer.
+    const t = now();
+    if (t < dragUntil) dragUntil = Math.max(dragUntil, t + coast);
     if (waiting) return;
     waiting = rec;
     // After the frame is drawn, when the layout is clean again: a scroll event
     // comes before the frame's writes, and what it reads would lay them out.
     frame(() => later(() => { flushScroll(); if (pinned) pinSoon(); }));
   }
+
+  // drag says a finger is on the log (true) or lifted from it (false). While
+  // it is on, and while the fling it started goes on, the finger owns the
+  // log: a log at its end is not put back there, or a finger that moves a
+  // few pixels a frame would never get away from the end (each move undone
+  // by the next frame's pin). Whether it left the end is for its scroll
+  // events to tell, as for any scroll; a log still at its end is put there
+  // once the finger and its fling are done.
+  let dragUntil = 0;
+  const coast = 150;
+  function drag(on) {
+    dragUntil = on ? now() + 8000 : now() + coast;
+    if (!on && pinned) pinSoon();
+  }
+  const held = () => now() < dragUntil;
 
   // heard says the reader is scrolling, for ms (default hold) from now.
   function heard(ms) {
@@ -160,7 +179,9 @@ window.HubStick = (log, o) => {
     frame(() => {
       pinQueued = false;
       flushScroll();
-      if (pinned && gap() >= 1) pin();
+      // Under a finger the pin waits for the next frame.
+      if (pinned && held()) pinSoon();
+      else if (pinned && gap() >= 1) pin();
     });
   }
 
@@ -210,6 +231,6 @@ window.HubStick = (log, o) => {
   // change is recent, so a scroll now is the reader's.
   const settled = () => log.clientHeight === rec.c && now() - resized >= settle && now() >= fresh;
 
-  return { settled, sync, scrolled, scrollSoon, heard, pin, pinSoon, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
+  return { settled, sync, scrolled, scrollSoon, heard, drag, pin, pinSoon, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
     acted: () => acted, hearing: () => now() < until, trail: () => trail.slice() };
 };
