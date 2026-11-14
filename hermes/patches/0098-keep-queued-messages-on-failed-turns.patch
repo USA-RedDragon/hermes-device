@@ -1,0 +1,837 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 01:45:05 -0600
+Subject: [PATCH] fix(turns): a failed or interrupted turn keeps the user's
+ queued message
+
+When a Claude account hit its weekly limit, the running turn failed and every message Jacob had sent during it ("Queued: Talaria reads this when the current turn ends") was answered with "Your request was not processed. Send it again if you still want me to carry it out." The queue itself was not lost: after the failed turn the TUI gateway drained the queued prompt into a new turn. That turn failed on the same limit, and the core failed-turn closer (agent/conversation_loop.py::_close_durable_failed_turn) closed it with the same boundary row, whose copy told the user, and the model reading that row as its own words, that the message was dropped. The message did stay in the model's context (the boundary is a separate assistant row, so alternation repair never merges it into the next message), but both readers were told to forget it.
+
+Every failed-turn boundary (the core closer, the gateway closers in gateway/run_turn_persistence.py, gateway/session_results.close_discarded_turn) now reads "This turn stopped before it finished. Your message is kept; I read it with your next message." (with "Some actions may already have run; verify their effects." when a tool ran). The old "not processed, send it again" copy is kept only for a turn the user cancelled: interrupt() records whether the stop was a user cancel (Stop / prompt.cancel / Ctrl-C, or a bare user interrupt) in _turn_user_cancelled, which outlives the finalizer's clear_interrupt() and is reset once the turn is closed. A new message that interrupts the turn is not a cancel: the TUI busy-input interrupt mode now labels its stop "user sent a new message" instead of a bare user interrupt. Restart, shutdown, timeout and watchdog stops pass their own reason and keep the message too, and the gateway restart and shutdown notices no longer ask for a resend. untyped_failed_turn_display_kind still recognizes the old stored texts.
+
+Two paths really did drop messages. A steer accepted during a turn that failed (retry exhaustion, a non-retryable provider error) stayed in the agent's steer buffer: the failure paths return before finalize_turn, so no pending_steer reached the host and the text was in no transcript. run_conversation now hands it back as result["pending_steer"], which the TUI and gateway already run as the next turn. abort_turn_on_interrupt (an interrupt during retry backoff) dropped the steer buffer for every interrupt; it now drops it only for a user cancel. And after a restart, reopen_session and the resume mount paths deactivated every never-drained queued prompt row (#125577), so a queued message the hub had accepted vanished. The row is now re-placed: the early row is deactivated (kept as history) and an unmarked copy is appended at the transcript end, an open user turn that the auto-continue retry or the user's next message reads.
+---
+ agent/agent_init.py                           |   2 +
+ agent/conversation_loop.py                    |  43 ++++-
+ agent/interrupt_control.py                    |  10 ++
+ agent/turn_failure_copy.py                    |  32 +++-
+ agent/turn_recovery.py                        |   8 +-
+ gateway/session_results.py                    |  11 +-
+ gateway/session_settlement_recovery.py        |  12 +-
+ hermes_state_sessions.py                      |  61 +++++--
+ .../test_failed_turn_keeps_message.py         |  77 +++++++++
+ tests/agent/test_failed_turn_keeps_message.py | 154 ++++++++++++++++++
+ .../gateway/test_restart_interrupt_notice.py  |   3 +-
+ .../test_busy_interrupt_keeps_message.py      |  50 ++++++
+ .../test_queued_prompt_restart_retire.py      |  56 ++++---
+ tui_gateway/session_auto_continue.py          |  19 ++-
+ 14 files changed, 478 insertions(+), 60 deletions(-)
+ create mode 100644 tests/acp_adapter/test_failed_turn_keeps_message.py
+ create mode 100644 tests/agent/test_failed_turn_keeps_message.py
+ create mode 100644 tests/tui_gateway/test_busy_interrupt_keeps_message.py
+
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 97197ac2af..6150915257 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -429,6 +429,8 @@ _CONTROL_STATE: dict[str, Any] = {
+     "_hard_interrupt_requested": threading.Event,
+     "_execution_thread_id": None,  # set at run_conversation() start
+     "_interrupt_thread_signal_pending": False,
++    # Set by interrupt() for a user cancel (Stop / Ctrl-C), read by the failed-turn closer.
++    "_turn_user_cancelled": False,
+     "_client_lock": threading.RLock,
+     "_model_request_active": threading.Event,
+     "_supports_active_turn_redirect": True,
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 877803ba93..5fcb9f624d 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1863,10 +1863,43 @@ def run_conversation(
+     result = export_current_turn_boundary(agent, result, user_message)
+     if isinstance(result, dict):
+         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
+-    _close_durable_failed_turn(agent, result)
++    try:
++        _close_durable_failed_turn(agent, result)
++        _hand_back_leftover_steer(agent, result)
++    finally:
++        # Per turn: a Stop of this turn must not make the next failed turn read as cancelled.
++        try:
++            agent._turn_user_cancelled = False
++        except Exception:
++            logger.debug("could not reset the turn's cancel flag", exc_info=True)
+     return result
+ 
+ 
++def _hand_back_leftover_steer(agent, result: Any) -> None:
++    """A steer accepted during a turn that ended without ``finalize_turn`` (retry exhaustion, a
++    non-retryable provider error, a plan limit) used to stay in the agent's buffer, where no host
++    looks: it was not in the transcript and the host never saw it, so the user's message was lost
++    unless another turn happened to drain it (and a restart lost it for good). Hand it back the way
++    the finalizer does (``result["pending_steer"]``) so the host runs it as the next turn. After a
++    user Stop nothing new is started on its own: the steer stays buffered as before and lands in
++    the user's next turn. Ticketed gateway transfers stay buffered for their claim's settlement,
++    as in the finalizer."""
++    if not isinstance(result, dict) or result.get("completed") is True or result.get("pending_steer"):
++        return
++    if getattr(agent, "_turn_user_cancelled", False) is True:
++        return
++    drain = getattr(agent, "_drain_leftover_steer", None)
++    if not callable(drain):
++        return
++    try:
++        leftover = drain()
++    except Exception:
++        logger.debug("leftover steer hand-back failed", exc_info=True)
++        return
++    if isinstance(leftover, str) and leftover.strip():
++        result["pending_steer"] = leftover
++
++
+ _FAILED_TURN_ERROR_MAX_CHARS = 2000
+ 
+ 
+@@ -1953,8 +1986,14 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
+         # hedge over the whole list rather than under-report a possible side effect.
+         start = result.get("current_turn_user_idx")
+         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
++        # Only a turn the USER cancelled is answered with "send it again". A failure (provider
++        # error, plan limit, retry exhaustion) or a system interrupt (restart, timeout, a new
++        # message) keeps the message: the boundary leaves the user row in the model's context and
++        # the next turn reads it, so asking for a resend would only duplicate it.
++        cancelled = result.get("interrupted") is True and getattr(agent, "_turn_user_cancelled", False) is True
+         boundary = {
+-            "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
++            "role": "assistant", "content": failed_turn_notice(turn_messages, cancelled=cancelled),
++            "display_kind": FAILED_TURN_DISPLAY_KIND,
+         }
+         if failure := _failed_turn_display_metadata(agent, result):
+             boundary["display_metadata"] = failure
+diff --git a/agent/interrupt_control.py b/agent/interrupt_control.py
+index fabea24983..c016468f17 100644
+--- a/agent/interrupt_control.py
++++ b/agent/interrupt_control.py
+@@ -22,6 +22,13 @@ _REASON_HARD_STOP = "explicit stop requested"
+ _REASON_NEW_MESSAGE = "user sent a new message"
+ _REASON_USER_INTERRUPT = "user interrupt"
+ USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
++# The ``tool_reason`` a host passes when a NEW user message interrupts the turn without carrying its text
++# (the TUI busy-input ``interrupt`` mode queues the message, then stops the turn): a user interrupt, not
++# a cancel, so the interrupted turn's message is kept instead of answered with "send it again".
++NEW_MESSAGE_INTERRUPT_REASON = _REASON_NEW_MESSAGE
++# Reasons that mean the user cancelled the turn (Stop, Ctrl-C, prompt.cancel): only these close the
++# turn with the "not processed, send it again" copy (``agent.turn_failure_copy.failed_turn_notice``).
++USER_CANCEL_REASONS = frozenset({_REASON_HARD_STOP, _REASON_USER_INTERRUPT})
+ # ``tool_reason`` the gateway's restart/shutdown stop passes (gateway.run._INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN).
+ _REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
+ 
+@@ -197,6 +204,9 @@ class InterruptControlMixin:
+                     and getattr(self, "_tool_interrupt_reason", None) in USER_INTERRUPT_REASONS):
+                 self._interrupt_message = message
+                 self._tool_interrupt_reason = tool_interrupt_reason
++                # Outlives clear_interrupt() (the finalizer clears the reason before the failed-turn
++                # closer runs); run_conversation resets it once the turn is closed.
++                self._turn_user_cancelled = tool_interrupt_reason in USER_CANCEL_REASONS
+             self._interrupt_requested = True
+             self._turn_user_intervened = True
+             # The turn record and the log must agree on WHO asked for the stop (#112647).
+diff --git a/agent/turn_failure_copy.py b/agent/turn_failure_copy.py
+index 086e879cc0..851da85a45 100644
+--- a/agent/turn_failure_copy.py
++++ b/agent/turn_failure_copy.py
+@@ -53,13 +53,30 @@ def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[
+ # (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
+ # (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+ 
++#
++# A failed or system-interrupted turn KEEPS the user's message: the boundary closes the turn but the
++# user row stays in the model's context (the boundary is a separate assistant row, so alternation
++# repair never folds the message into an unrelated one), and the next turn reads it. So the copy
++# never asks the user to send it again. Only a turn the user cancelled (Stop / prompt.cancel) gets
++# the "not processed, send it again" copy: there the user chose to drop it.
+ FAILED_TURN_NOTICE = (
+-    "Your request was not processed. Send it again if you still want me to carry it out."
++    "This turn stopped before it finished. Your message is kept; I read it with your next message."
+ )
+ PARTIAL_FAILED_TURN_NOTICE = (
++    "This turn stopped before it finished. Some actions may already have run; verify their effects. "
++    "Your message is kept; I read it with your next message."
++)
++CANCELLED_TURN_NOTICE = (
++    "Your request was not processed. Send it again if you still want me to carry it out."
++)
++CANCELLED_PARTIAL_TURN_NOTICE = (
+     "This turn did not complete. Some actions may already have run; verify their effects "
+     "before resending."
+ )
++# Every boundary text a closer ever wrote, for rows stored before the closers typed them.
++_STORED_BOUNDARY_NOTICES = frozenset({
++    FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, CANCELLED_TURN_NOTICE, CANCELLED_PARTIAL_TURN_NOTICE,
++})
+ # A turn no person sent (a cron run, a process completion, a webhook delivery) lost across a gateway
+ # restart, or fenced inside the running owner (a lost managed worker): it settles interrupted and is
+ # never re-run, so nobody is asked to resend it (#134889 GW-10). Neutral: not every path restarted.
+@@ -93,21 +110,22 @@ CONTENT_REFUSED_METADATA_KEY = "content_refused"
+ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
+     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
+     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
+-    if role == "assistant" and isinstance(content, str) and content.strip() in (
+-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
++    if role == "assistant" and isinstance(content, str) and (
++        content.strip() in _STORED_BOUNDARY_NOTICES or content.strip() == AUTOMATION_INTERRUPTED_NOTICE
+     ):
+         return FAILED_TURN_DISPLAY_KIND
+     return None
+ 
+ 
+-def failed_turn_notice(turn_messages: Any) -> str:
+-    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
++def failed_turn_notice(turn_messages: Any, *, cancelled: bool = False) -> str:
++    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run, and
++    never ask for a resend unless the user cancelled the turn (``cancelled``)."""
+     for row in turn_messages or ():
+         if isinstance(row, dict) and (
+             row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
+         ):
+-            return PARTIAL_FAILED_TURN_NOTICE
+-    return FAILED_TURN_NOTICE
++            return CANCELLED_PARTIAL_TURN_NOTICE if cancelled else PARTIAL_FAILED_TURN_NOTICE
++    return CANCELLED_TURN_NOTICE if cancelled else FAILED_TURN_NOTICE
+ 
+ 
+ def provider_label_for(provider: Any) -> str:
+diff --git a/agent/turn_recovery.py b/agent/turn_recovery.py
+index 9c0cc753f8..ef372c486a 100644
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -1398,9 +1398,11 @@ def abort_turn_on_interrupt(
+     agent._drop_trailing_empty_response_scaffolding(messages)
+     close_interrupted_tool_sequence(messages, interrupt_text, stopped=True)
+     agent._persist_session(messages, conversation_history)
+-    # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
+-    # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
+-    agent.clear_interrupt(hard_cancel=True)
++    # The turn was stopped, not rebuilt. A user Stop drops a pending steer (hard-cancel
++    # semantics: it was aimed at this turn's next tool iteration). Any other interrupt (a new
++    # message, a restart, a watchdog) keeps it: run_conversation hands it back as
++    # ``pending_steer`` and the host runs it as the next turn instead of losing the message.
++    agent.clear_interrupt(hard_cancel=getattr(agent, "_turn_user_cancelled", False) is True)
+     return {
+         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
+         "completed": False, "interrupted": True,
+diff --git a/gateway/session_results.py b/gateway/session_results.py
+index 04e1ac247b..946bfe53dd 100644
+--- a/gateway/session_results.py
++++ b/gateway/session_results.py
+@@ -123,10 +123,11 @@ def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, disp
+     """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
+     own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
+ 
+-    The lost input stays in the transcript for the user to resend, but an open ``user`` tail would be
+-    merged into the follower's provider request by consecutive-user repair, re-sending the discarded
+-    turn as context. A Hermes-authored boundary (``display_kind=failed_turn``, stripped of its type
+-    before the wire) ends it. Its side effects are unknown, so the hedged copy. The boundary lands on
++    The lost input stays in the transcript and in the model's context (the next turn reads it, so the
++    copy never asks for a resend), but an open ``user`` tail would be merged into the follower's
++    provider request by consecutive-user repair, gluing the two messages into one. A Hermes-authored
++    boundary (``display_kind=failed_turn``, stripped of its type before the wire) ends it as its own
++    turn. Its side effects are unknown, so the hedged copy. The boundary lands on
+     the CURRENT physical transcript (local reset/compression lineage tip), resolved on this
+     connection. Idempotent on the durable tail, like the gateway and core failed-turn closers.
+ 
+@@ -140,7 +141,7 @@ def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, disp
+ 
+     ``replace_after`` (the claim's transcript mark, an owner-stop notice): when the tail is a
+     failed-turn boundary written after that mark, it is THIS turn's own (the agent's core closer
+-    wrote "Send it again" for the interrupted turn), so the notice replaces its copy instead of
++    already closed the interrupted turn), so the notice replaces its copy instead of
+     stacking a second boundary (#134889 GW-21). An earlier turn's boundary stays.
+ 
+     ``display_metadata`` (``{error, error_surface}``) rides the boundary so a reopened chat redraws
+diff --git a/gateway/session_settlement_recovery.py b/gateway/session_settlement_recovery.py
+index a204c4d797..34c495708e 100644
+--- a/gateway/session_settlement_recovery.py
++++ b/gateway/session_settlement_recovery.py
+@@ -122,10 +122,14 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
+     live.event_stream.publish(ref.session_id, complete)
+ 
+ 
+-RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+-                            'Send your message again once Hermes reconnects.')
+-SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
+-                             'Send your message again once Hermes is back.')
++# The interrupted turn's user row stays in the transcript ahead of this boundary, so the model reads it
++# with the next message: nobody is asked to resend it (the failed-turn copy in agent/turn_failure_copy.py).
++RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn stopped before it finished. Some actions may '
++                            'already have run; verify their effects. Your message is kept; I read it with '
++                            'your next message.')
++SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn stopped before it finished. Some actions may '
++                             'already have run; verify their effects. Your message is kept; I read it with '
++                             'your next message.')
+ 
+ 
+ def owner_stop_notice(captured, outcome, row=None):
+diff --git a/hermes_state_sessions.py b/hermes_state_sessions.py
+index d8807dbf31..a06804370c 100644
+--- a/hermes_state_sessions.py
++++ b/hermes_state_sessions.py
+@@ -496,23 +496,58 @@ class SessionSessionsMixin:
+             self._bump_conversation_generation(conn, session_id, reason)
+         return changed
+ 
+-    @staticmethod
+-    def _retire_undrained_queue_rows_conn(conn, session_id: str) -> int:
+-        """The still-marked == never-drained accept-row UPDATE (#125577), on a caller's connection."""
+-        return conn.execute(
+-            "UPDATE messages SET active = 0 "
++    def _retire_undrained_queue_rows_conn(self, conn, session_id: str) -> int:
++        """Re-place every still-marked (never-drained) accept row at the transcript end, unmarked,
++        on a caller's connection; returns how many were re-placed (#125577)."""
++        marked = conn.execute(
++            "SELECT id, content, api_content, display_kind, display_metadata FROM messages "
+             "WHERE session_id = ? AND role = 'user' AND active = 1 "
+-            f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
++            f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1 "
++            "ORDER BY id",
+             (session_id,),
+-        ).rowcount
++        ).fetchall()
++        if not marked:
++            return 0
++        conn.executemany("UPDATE messages SET active = 0 WHERE id = ?", [(row[0],) for row in marked])
++        copies = []
++        for _row_id, content, api_content, display_kind, raw_metadata in marked:
++            metadata = dict(self._decode_display_metadata(raw_metadata) or {})
++            metadata.pop(QUEUED_PROMPT_METADATA_KEY, None)
++            copy = {"role": "user", "content": self._decode_content(content), "timestamp": time.time()}
++            if api_content is not None:
++                copy["api_content"] = api_content
++            if display_kind is not None:
++                copy["display_kind"] = display_kind
++            if metadata:
++                copy["display_metadata"] = metadata
++            copies.append(copy)
++        # A savepoint keeps the retire atomic with the re-append: if the append is refused (a write
++        # guard, a held compression lock) the rows stay retired as before rather than half-copied.
++        conn.execute("SAVEPOINT requeue_undrained")
++        try:
++            self._append_messages_in_transaction(conn, session_id, copies)
++        except Exception:
++            conn.execute("ROLLBACK TO requeue_undrained")
++            logger.warning("re-placing %d never-drained queued prompt(s) of %s failed; they stay retired",
++                           len(copies), session_id, exc_info=True)
++        finally:
++            conn.execute("RELEASE requeue_undrained")
++        return len(marked)
+ 
+     def retire_undrained_queue_rows(self, session_id: str) -> int:
+-        """Deactivate busy-queue accept rows that never drained (#125577): a restart discarded the
+-        in-memory queue, so nothing re-placed/deactivated the row written at accept time and
+-        alternation repair would glue the never-run prompt into the previous turn's user message.
+-        The drain's replacement row carries no marker, so still-marked == never drained; a
+-        dispatched-then-interrupted turn's row is never marked (its discard is handled in-process,
+-        #123532). Deactivated, never deleted — the row stays as history.
++        """Re-place busy-queue accept rows that never drained (#125577): a restart discarded the
++        in-memory queue, so nothing re-placed/deactivated the row written at accept time, and it
++        sits where the queue accepted it, BEFORE the in-flight turn's assistant rows: alternation
++        repair would glue the never-run prompt into the previous turn's user message, which the
++        model reads as already answered. The drain's replacement row carries no marker, so
++        still-marked == never drained; a dispatched-then-interrupted turn's row is never marked
++        (its discard is handled in-process, #123532).
++
++        The row used to be retired outright, which silently dropped a message the user was told
++        would run. Now the early row is deactivated (kept as history, never deleted) and an
++        unmarked copy is appended at the transcript END: the prompt is an open user turn the next
++        turn reads (an auto-continue retry or the user's next message folds it in), so the user
++        never has to send it again.
+ 
+         Split out of :meth:`reopen_session` so the read-only mount paths (#85303: resume,
+         lazy watch, hydration) can retire stale accept rows WITHOUT clearing ``ended_at`` —
+diff --git a/tests/acp_adapter/test_failed_turn_keeps_message.py b/tests/acp_adapter/test_failed_turn_keeps_message.py
+new file mode 100644
+index 0000000000..f2b4c499b2
+--- /dev/null
++++ b/tests/acp_adapter/test_failed_turn_keeps_message.py
+@@ -0,0 +1,77 @@
++"""A failed turn keeps the user's message: the boundary row never asks for a resend, the message stays
++in the model's context, and a steer accepted during the failed turn is handed back to the host.
++
++Driven through the real ``HermesACPAgent`` / ``AIAgent`` / ``SessionDB`` against the loopback provider
++of ``test_failed_turn_closure``. The failure is a non-retryable HTTP 400: one request, no retries, the
++same shape as a provider plan limit that ends the turn (the case that dropped queued Talaria messages:
++the queued prompt drained into a new turn, that turn failed on the same limit, and its boundary told
++the user the request "was not processed" and to send it again).
++"""
++
++from __future__ import annotations
++
++from tests.acp_adapter.test_failed_turn_closure import acp  # noqa: F401  (fixture)
++
++_QUEUED = "queued message A: rename the build job"
++_NEXT = "message B: and tag the release"
++
++
++class _HookedScript(list):
++    """The loopback handler pops one spec per request; ``hook`` runs inside the request, i.e. while
++    the turn's API call is in flight (where a hub steer lands)."""
++
++    def __init__(self, items, hook=None):
++        super().__init__(items)
++        self.hook = hook
++
++    def pop(self, *args):
++        if self.hook is not None:
++            self.hook()
++        return super().pop(*args)
++
++
++def _fail():
++    return {"status": 400, "error": "request rejected for this account"}
++
++
++def test_failed_turn_boundary_keeps_the_message_and_the_next_request_reads_it(acp):
++    from agent.turn_failure_copy import CANCELLED_TURN_NOTICE, FAILED_TURN_NOTICE
++
++    provider, prompt, rows, _db, _sid, _conn, _server = acp
++    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
++    prompt("hello")
++
++    provider.script = [_fail()]
++    prompt(_QUEUED)
++    # The failed turn is closed by a Hermes boundary that keeps the message, never "send it again".
++    assert rows()[-2:] == [("user", _QUEUED), ("assistant", FAILED_TURN_NOTICE)]
++    assert all(CANCELLED_TURN_NOTICE != content and "again" not in str(content) for _, content in rows())
++
++    provider.script = [{"finish_reason": "stop", "content": "Renamed and tagged."}]
++    prompt(_NEXT)
++    sent = [(m["role"], m.get("content")) for m in provider.requests[-1]["messages"] if m["role"] != "system"]
++    # The failed message reaches the model as its OWN user turn (not stripped, not merged into B),
++    # followed by the boundary and then the new message.
++    assert sent == [
++        ("user", "hello"), ("assistant", "Hello there."),
++        ("user", _QUEUED), ("assistant", FAILED_TURN_NOTICE),
++        ("user", _NEXT),
++    ]
++
++
++def test_steer_accepted_during_a_failed_turn_is_handed_back(acp):
++    """A steer that lands while the failing API call is in flight used to stay in the agent's buffer:
++    the failure path returns before ``finalize_turn``, so no ``pending_steer`` reached the host and the
++    message was not in the transcript either."""
++    provider, prompt, _rows, _db, sid, _conn, server = acp
++    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
++    prompt("hello")
++    agent = server.session_manager.get_session(sid).agent
++    history = list(server.session_manager.get_session(sid).history)
++
++    provider.script = _HookedScript([_fail()], hook=lambda: agent.steer("steer: also bump the version"))
++    result = agent.run_conversation(user_message=_QUEUED, conversation_history=history)
++
++    assert result.get("completed") is not True
++    assert result.get("pending_steer") == "steer: also bump the version"
++    assert not getattr(agent, "_pending_steer", None)  # handed back once, not also left buffered
+diff --git a/tests/agent/test_failed_turn_keeps_message.py b/tests/agent/test_failed_turn_keeps_message.py
+new file mode 100644
+index 0000000000..f071551e44
+--- /dev/null
++++ b/tests/agent/test_failed_turn_keeps_message.py
+@@ -0,0 +1,154 @@
++"""Only a user cancel answers a turn with "not processed, send it again"; every other failed or
++interrupted turn keeps the user's message (``agent/turn_failure_copy.py``)."""
++
++from __future__ import annotations
++
++import threading
++from types import SimpleNamespace
++from unittest.mock import MagicMock
++
++import pytest
++
++from agent.interrupt_control import NEW_MESSAGE_INTERRUPT_REASON, InterruptControlMixin
++from agent.turn_failure_copy import (
++    AUTOMATION_INTERRUPTED_NOTICE, CANCELLED_PARTIAL_TURN_NOTICE, CANCELLED_TURN_NOTICE,
++    FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, failed_turn_notice,
++    untyped_failed_turn_display_kind,
++)
++
++# What the closers wrote before this change; stored rows still carry these exact strings.
++_OLD_FAILED = "Your request was not processed. Send it again if you still want me to carry it out."
++_OLD_PARTIAL = ("This turn did not complete. Some actions may already have run; verify their effects "
++                "before resending.")
++
++
++class _Agent(InterruptControlMixin):
++    """The attributes ``interrupt()`` touches, without building an AIAgent."""
++
++    def __init__(self):
++        self._execution_thread_id = None
++        self._active_children_lock = threading.Lock()
++        self._active_children = []
++        self.quiet_mode = True
++
++
++@pytest.mark.parametrize("stop, cancelled", [
++    (lambda a: a.hard_interrupt(), True),                      # Stop / prompt.cancel / Ctrl-C
++    (lambda a: a.interrupt(), True),                           # bare user interrupt
++    (lambda a: a.interrupt("deploy it instead"), False),       # a new message interrupts
++    (lambda a: a.interrupt(tool_reason=NEW_MESSAGE_INTERRUPT_REASON), False),  # TUI busy queue
++    (lambda a: a.hard_interrupt("Gateway restarting", tool_reason="gateway shutdown"), False),
++    (lambda a: a.interrupt("watchdog", hard_cancel=True, tool_reason="turn liveness watchdog"), False),
++])
++def test_only_a_user_cancel_marks_the_turn_cancelled(stop, cancelled):
++    agent = _Agent()
++    stop(agent)
++    agent.clear_interrupt()  # the finalizer clears the interrupt BEFORE the failed-turn closer runs
++    assert agent._turn_user_cancelled is cancelled
++
++
++def _closer_agent(db, cancelled):
++    def flush(messages):
++        db.append_message("s1", messages[-1]["role"], messages[-1]["content"],
++                          display_kind=messages[-1].get("display_kind"))
++
++    return SimpleNamespace(_session_db=db, session_id="s1", _flush_messages_to_session_db=flush,
++                           provider="p", model="m", _turn_user_cancelled=cancelled)
++
++
++@pytest.mark.parametrize("result, cancelled, notice", [
++    ({"failed": True, "failure_reason": "rate_limit"}, False, FAILED_TURN_NOTICE),
++    ({"failed": True, "failure_reason": "billing"}, False, FAILED_TURN_NOTICE),
++    ({"interrupted": True}, False, FAILED_TURN_NOTICE),       # interrupted by a new message / restart
++    ({"interrupted": True}, True, CANCELLED_TURN_NOTICE),     # the user pressed Stop
++    ({"failed": True}, True, FAILED_TURN_NOTICE),             # a stale flag never relabels a failure
++])
++def test_failed_turn_boundary_copy_follows_the_cause(tmp_path, monkeypatch, result, cancelled, notice):
++    from agent.conversation_loop import _close_durable_failed_turn
++    from hermes_state import SessionDB
++
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    db = SessionDB(tmp_path / "state.db")
++    db.create_session(session_id="s1", source="tui", model="m")
++    db.append_message("s1", "user", "rename the build job")
++    messages = [{"role": "user", "content": "rename the build job"}]
++    _close_durable_failed_turn(_closer_agent(db, cancelled), {"completed": False, "messages": messages, **result})
++    stored = db.get_messages("s1")
++    assert [(r["role"], r["content"], r["display_kind"]) for r in stored] == [
++        ("user", "rename the build job", None), ("assistant", notice, FAILED_TURN_DISPLAY_KIND)]
++    db.close()
++
++
++def test_run_conversation_resets_the_cancel_flag_after_closing_the_turn(monkeypatch):
++    """A Stop of one turn must not make the next failed turn read as cancelled."""
++    import agent.conversation_loop as loop
++
++    agent = SimpleNamespace(_turn_user_cancelled=True, provider="p", model="m")
++    monkeypatch.setattr(loop, "_run_conversation_turn", lambda *a, **k: {"completed": True, "messages": []})
++    monkeypatch.setattr("agent.turn_finalizer.settle_held_final", lambda *a: None)
++    monkeypatch.setattr("agent.turn_context.export_current_turn_boundary", lambda a, r, u: r)
++    monkeypatch.setattr("agent.voice_turn_route.end_voice_turn_route", lambda a: None)
++    loop.run_conversation(agent, "hi")
++    assert agent._turn_user_cancelled is False
++
++
++def test_notice_copy_never_asks_for_a_resend_unless_cancelled():
++    tool_turn = [{"role": "assistant", "tool_calls": [{"id": "t"}]}, {"role": "tool", "content": "ok"}]
++    assert failed_turn_notice([]) == FAILED_TURN_NOTICE
++    assert failed_turn_notice(tool_turn) == PARTIAL_FAILED_TURN_NOTICE
++    assert failed_turn_notice([], cancelled=True) == CANCELLED_TURN_NOTICE == _OLD_FAILED
++    assert failed_turn_notice(tool_turn, cancelled=True) == CANCELLED_PARTIAL_TURN_NOTICE == _OLD_PARTIAL
++    from gateway.session_settlement_recovery import RESTART_INTERRUPT_NOTICE, SHUTDOWN_INTERRUPT_NOTICE
++    for notice in (FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, RESTART_INTERRUPT_NOTICE,
++                   SHUTDOWN_INTERRUPT_NOTICE):
++        assert "again" not in notice and "resend" not in notice and "kept" in notice
++    assert "Some actions may already have run" in PARTIAL_FAILED_TURN_NOTICE
++
++
++@pytest.mark.parametrize("content", [
++    _OLD_FAILED, _OLD_PARTIAL, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
++    f"  {_OLD_FAILED}\n",
++])
++def test_untyped_boundary_rows_are_still_recognized(content):
++    assert untyped_failed_turn_display_kind("assistant", content) == FAILED_TURN_DISPLAY_KIND
++    assert untyped_failed_turn_display_kind("user", content) is None
++
++
++def test_untyped_recognition_stays_exact():
++    assert untyped_failed_turn_display_kind("assistant", f"Note: {FAILED_TURN_NOTICE}") is None
++
++
++@pytest.mark.parametrize("cancelled, hard", [(False, False), (True, True)])
++def test_backoff_interrupt_keeps_the_steer_unless_the_user_cancelled(cancelled, hard):
++    from agent.turn_recovery import abort_turn_on_interrupt
++
++    agent = MagicMock()
++    agent._turn_user_cancelled = cancelled
++    abort_turn_on_interrupt(agent, [{"role": "user", "content": "x"}], [], 1,
++                            abort_message="stopped", interrupt_text="stopped")
++    agent.clear_interrupt.assert_called_once_with(hard_cancel=hard)
++
++
++@pytest.mark.parametrize("messages, notice", [
++    ([{"role": "user", "content": "rename the build job"}], FAILED_TURN_NOTICE),
++    ([{"role": "user", "content": "x"}, {"role": "assistant", "tool_calls": [{"id": "t"}]},
++      {"role": "tool", "content": "ok"}], PARTIAL_FAILED_TURN_NOTICE),
++])
++def test_gateway_failed_turn_boundary_keeps_the_message(messages, notice):
++    """The messaging gateway (Telegram etc.) closes failed turns itself; its copy follows the same rule."""
++    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
++
++    got = GatewayTurnPersistenceMixin._hmwa_failed_turn_notice(None, {"messages": messages, "history_offset": 0})
++    assert got == notice and "again" not in got
++
++
++def test_steer_stays_buffered_after_a_user_stop(monkeypatch):
++    from agent.conversation_loop import _hand_back_leftover_steer
++
++    agent = SimpleNamespace(_turn_user_cancelled=True, _drain_leftover_steer=lambda: "late steer")
++    result = {"completed": False, "interrupted": True}
++    _hand_back_leftover_steer(agent, result)
++    assert "pending_steer" not in result
++    agent._turn_user_cancelled = False
++    _hand_back_leftover_steer(agent, result)
++    assert result["pending_steer"] == "late steer"
+diff --git a/tests/gateway/test_restart_interrupt_notice.py b/tests/gateway/test_restart_interrupt_notice.py
+index 483a7be3fc..9b698ab660 100644
+--- a/tests/gateway/test_restart_interrupt_notice.py
++++ b/tests/gateway/test_restart_interrupt_notice.py
+@@ -57,7 +57,8 @@ def _cause(message, **extra):
+ def test_turn_interrupted_by_the_owner_stop_carries_a_named_notice(cause, notice):
+     frame = _publish('interrupted', _cause(cause))
+     assert frame['status'] == 'interrupted' and frame['warning'] == notice
+-    assert 'will not be run again' in notice
++    # The interrupted message stays in context for the next turn: the notice says so, never "send it again".
++    assert 'Your message is kept' in notice and 'again' not in notice
+     EVENTS['message.complete'].payload.model_validate({k: frame[k] for k in ('text', 'status', 'warning')})
+ 
+ 
+diff --git a/tests/tui_gateway/test_busy_interrupt_keeps_message.py b/tests/tui_gateway/test_busy_interrupt_keeps_message.py
+new file mode 100644
+index 0000000000..912c332bde
+--- /dev/null
++++ b/tests/tui_gateway/test_busy_interrupt_keeps_message.py
+@@ -0,0 +1,50 @@
++"""The TUI busy-input ``interrupt`` mode queues the new message and then stops the live turn. That stop
++is "the user sent a new message", not a cancel: the interrupted turn's message is kept for the queued
++turn to read, so its failed-turn boundary must not ask for a resend (``agent/turn_failure_copy.py``)."""
++
++from __future__ import annotations
++
++import threading
++from unittest.mock import MagicMock
++
++from agent.interrupt_control import NEW_MESSAGE_INTERRUPT_REASON, InterruptControlMixin
++from tui_gateway import server
++
++
++class _Agent(InterruptControlMixin):
++    def __init__(self):
++        self._execution_thread_id = None
++        self._active_children_lock = threading.Lock()
++        self._active_children = []
++        self.quiet_mode = True
++
++
++def test_busy_interrupt_is_labelled_a_new_message_not_a_cancel():
++    agent = _Agent()
++    server._interrupt_for_new_message(agent)
++    assert agent._tool_interrupt_reason == NEW_MESSAGE_INTERRUPT_REASON
++    assert agent._turn_user_cancelled is False
++
++
++def test_busy_interrupt_falls_back_to_the_bare_call_for_older_agents():
++    legacy = MagicMock(spec=["interrupt"])
++    legacy.interrupt = lambda message=None: calls.append(message)
++    calls: list = []
++    server._interrupt_for_new_message(legacy)
++    assert calls == [None]
++
++
++def test_busy_session_interrupt_worker_uses_the_new_message_label(monkeypatch):
++    agent = _Agent()
++    done = threading.Event()
++    real = server._interrupt_for_new_message
++
++    def spy(a):
++        real(a)
++        done.set()
++
++    monkeypatch.setattr(server, "_interrupt_for_new_message", spy)
++    session = {"history_lock": threading.Lock()}
++    server._interrupt_busy_session("sid", session, agent)
++    assert done.wait(5)
++    assert agent._turn_user_cancelled is False
+diff --git a/tests/tui_gateway/test_queued_prompt_restart_retire.py b/tests/tui_gateway/test_queued_prompt_restart_retire.py
+index 8afb1be487..459ef75c2f 100644
+--- a/tests/tui_gateway/test_queued_prompt_restart_retire.py
++++ b/tests/tui_gateway/test_queued_prompt_restart_retire.py
+@@ -2,9 +2,11 @@
+ active — the next cold resume's alternation repair glues the never-run prompt into the previous
+ turn's user message (#125577).
+ 
+-The fix marks the accept-time row (``display_metadata._queued_prompt``) and ``reopen_session``
+-deactivates still-marked rows: the drain's replacement row is unmarked, so still-marked after a
+-restart == never drained. Rows are deactivated, never deleted, the same marking the drain uses.
++The accept-time row is marked (``display_metadata._queued_prompt``) and ``reopen_session`` (and the
++read-only mount paths) re-place still-marked rows: the drain's replacement row is unmarked, so
++still-marked after a restart == never drained. The early row is deactivated (never deleted) and an
++unmarked copy lands at the transcript END, so the never-run prompt is an open user turn the next turn
++reads instead of a message the restart silently dropped.
+ """
+ 
+ import types
+@@ -48,9 +50,10 @@ def _accept_busy_prompt_a_concludes(db, sid, key, queued_text="queued prompt B R
+     db.append_message(key, "assistant", content="reply A")  # turn A concludes; the drain never runs
+ 
+ 
+-def test_restart_retires_the_never_drained_accept_row(monkeypatch, tmp_path):
+-    """RED for the bug: with the queue gone (restart), nothing retired the accept-time row and the
+-    repaired projection returned 'prompt A\n\nqueued prompt B' absorbed into turn A's user message."""
++def test_restart_requeues_the_never_drained_accept_row(monkeypatch, tmp_path):
++    """With the queue gone (restart), nothing re-placed the accept-time row and the repaired
++    projection returned 'prompt A\n\nqueued prompt B' absorbed into turn A's user message; the first
++    fix retired the row instead, which dropped the user's queued message. It is re-placed at the end."""
+     db = SessionDB(db_path=tmp_path / "state.db")
+     sid, key = _desktop_session(monkeypatch, db)
+     try:
+@@ -62,19 +65,21 @@ def test_restart_retires_the_never_drained_accept_row(monkeypatch, tmp_path):
+             fresh.reopen_session(key)
+             repaired = fresh.get_messages_as_conversation(key, repair_alternation=True, include_row_ids=True)
+             assert [(r["role"], r["content"]) for r in repaired] == [
+-                ("user", "prompt A"), ("assistant", "reply A")]
++                ("user", "prompt A"), ("assistant", "reply A"), ("user", "queued prompt B RESTART-MARKER")]
++            assert fresh.retire_undrained_queue_rows(key) == 0  # the copy is unmarked: idempotent
+         finally:
+             fresh.close()
+-        # The never-run prompt is retired (inactive), never deleted: durable history keeps it.
+         # Raw row order/roles/active state, not just a count (#125577 review): the accept-time
+-        # row sits between turn A's rows, exactly where the busy-queue accepted it, and only
+-        # it went inactive — the restart retired the never-drained prompt, nothing else.
++        # row sits between turn A's rows, exactly where the busy-queue accepted it, and went
++        # inactive (kept as history); its unmarked copy is the open tail the next turn reads.
+         raw = db.get_messages(key, include_inactive=True)
+         assert [(r["role"], r["active"], "RESTART-MARKER" in str(r["content"])) for r in raw] == [
+             ("user", 1, False),          # prompt A
+-            ("user", 0, True),            # queued prompt B — never drained, retired by reopen
++            ("user", 0, True),            # queued prompt B's accept row, re-placed by reopen
+             ("assistant", 1, False),      # reply A
++            ("user", 1, True),            # queued prompt B, now the open tail
+         ]
++        assert not (raw[-1]["display_metadata"] or {}).get("_queued_prompt")
+     finally:
+         server._sessions.pop(sid, None)
+         db.close()
+@@ -97,10 +102,10 @@ def test_resume_does_not_retire_drained_or_plain_rows(monkeypatch, tmp_path):
+         db.close()
+ 
+ 
+-def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_path):
++def test_restart_between_drains_requeues_only_the_later_prompt(monkeypatch, tmp_path):
+     """Two prompts accepted busy; the first drains (its row re-placed unmarked), then the backend
+-    dies before the second drains. The restart retires the SECOND prompt's still-marked row while
+-    the drained first turn's row — same text family — stays active in its healed position."""
++    dies before the second drains. The restart re-places the SECOND prompt's still-marked row at
++    the end while the drained first turn's row stays active in its healed position."""
+     db = SessionDB(db_path=tmp_path / "state.db")
+     sid, key = _desktop_session(monkeypatch, db)
+     session = server._sessions[sid]
+@@ -122,7 +127,7 @@ def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_p
+         monkeypatch.setattr(server, "_run_prompt_submit",
+                             lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+         assert server._drain_queued_prompt("r3", sid, session) is True  # drains B only
+-        # The restart: queue gone; C never drained. The cold reopen retires C's row, not B's turn.
++        # The restart: queue gone; C never drained. The cold reopen re-places C's row, not B's turn.
+         session["queued_prompt"] = None
+         session.pop("queued_prompts", None)
+         fresh = SessionDB(db_path=tmp_path / "state.db")
+@@ -131,11 +136,12 @@ def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_p
+             repaired = fresh.get_messages_as_conversation(key, repair_alternation=True, include_row_ids=True)
+             assert [(r["role"], r["content"]) for r in repaired] == [
+                 ("user", "prompt A"), ("assistant", "reply A"),
+-                ("user", "prompt B DRAIN-RESTART-B"), ("assistant", "reply B")]
++                ("user", "prompt B DRAIN-RESTART-B"), ("assistant", "reply B"),
++                ("user", "prompt C DRAIN-RESTART-C")]
+             every = fresh.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
+-            # C never ran: no ACTIVE row carries it. Its copies survive inactive (durable history
+-            # never deletes — the drain's re-placement left one, the reopen retired the other).
+-            assert not [r for r in _active_rows(fresh, key) if "DRAIN-RESTART-C" in str(r["content"])]
++            # C never ran: exactly one ACTIVE row carries it, at the end. Its earlier copies survive
++            # inactive (durable history never deletes).
++            assert len([r for r in _active_rows(fresh, key) if "DRAIN-RESTART-C" in str(r["content"])]) == 1
+             assert any("DRAIN-RESTART-C" in str(r["content"])
+                        for r in every if "DRAIN-RESTART-B" not in str(r["content"]))
+         finally:
+@@ -145,7 +151,7 @@ def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_p
+         db.close()
+ 
+ 
+-def test_readonly_resume_after_restart_retires_marked_row_without_reopen(
++def test_readonly_resume_after_restart_requeues_marked_row_without_reopen(
+         monkeypatch, tmp_path):
+     """RED on the #128508 head: with the reopen gone from the mount paths, a restart + bare
+     resume (no submit) left the still-marked accept row ACTIVE — it stayed glued into the
+@@ -192,15 +198,17 @@ def test_readonly_resume_after_restart_retires_marked_row_without_reopen(
+                 row = db.get_session(key)
+                 assert row["ended_at"] is not None, "resume must not reopen the finalized row (#85303)"
+                 assert row["end_reason"] == "agent_close"
+-                # But the never-drained accept row is retired (#125577): the repaired projection
+-                # no longer absorbs the queued prompt into turn A's user message.
++                # But the never-drained accept row is re-placed (#125577): the repaired projection
++                # no longer absorbs the queued prompt into turn A's user message, and the prompt
++                # is kept as the open tail (once, across both mount paths).
+                 repaired = db.get_messages_as_conversation(key, repair_alternation=True,
+                                                             include_row_ids=True)
+                 assert [(r["role"], r["content"]) for r in repaired] == [
+-                    ("user", "prompt A"), ("assistant", "reply A")]
++                    ("user", "prompt A"), ("assistant", "reply A"),
++                    ("user", "queued prompt B RESTART-MARKER")]
+                 raw = db.get_messages(key, include_inactive=True)
+                 assert [(r["role"], r["active"]) for r in raw] == [
+-                    ("user", 1), ("user", 0), ("assistant", 1)]
++                    ("user", 1), ("user", 0), ("assistant", 1), ("user", 1)]
+             finally:
+                 server._sessions.pop(resumed_sid, None)
+     finally:
+diff --git a/tui_gateway/session_auto_continue.py b/tui_gateway/session_auto_continue.py
+index ba20b94d41..3d9efffa0d 100644
+--- a/tui_gateway/session_auto_continue.py
++++ b/tui_gateway/session_auto_continue.py
+@@ -5,6 +5,7 @@ busy-submit handling. Bodies are rebound onto server.py's globals at install tim
+ from __future__ import annotations
+ 
+ import contextlib
++import inspect
+ import os
+ 
+ from .method_ctx import bind_module
+@@ -221,6 +222,19 @@ def _ac_set_queue(session: dict, entries: list) -> None:
+         session.pop("queued_prompts", None)
+ 
+ 
++def _interrupt_for_new_message(agent: Any) -> None:
++    """Stop the live turn because the user sent a new (queued) message. Labelled as such, not as a
++    bare user interrupt: the interrupted turn's message is kept for the queued turn to read, so its
++    boundary must not ask for a resend (only a Stop does). An agent without ``tool_reason`` gets the
++    bare call."""
++    from agent.interrupt_control import NEW_MESSAGE_INTERRUPT_REASON
++    try:
++        accepts_reason = "tool_reason" in inspect.signature(agent.interrupt).parameters
++    except (TypeError, ValueError):
++        accepts_reason = False
++    agent.interrupt(tool_reason=NEW_MESSAGE_INTERRUPT_REASON) if accepts_reason else agent.interrupt()
++
++
+ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
+     """Interrupt a busy turn on a worker thread, never under ``history_lock`` (some providers can't apply ``interrupt()``
+     until a blocking call returns; inline it stalled ``session.resume``). At most one interrupt worker per session so
+@@ -236,7 +250,10 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
+     def interrupt() -> None:
+         try:
+             with contextlib.suppress(Exception):
+-                agent.interrupt() if use_agent else _get_compute_host_supervisor().interrupt(sid)
++                if use_agent:
++                    _interrupt_for_new_message(agent)
++                else:
++                    _get_compute_host_supervisor().interrupt(sid)
+         finally:
+             with session["history_lock"]:
+                 session["_busy_interrupt_pending"] = False

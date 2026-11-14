@@ -1,0 +1,23 @@
+# New: the failed-turn boundary keeps the message, steers are handed back, restart re-places queued prompts
+tests/agent/test_failed_turn_keeps_message.py
+tests/acp_adapter/test_failed_turn_keeps_message.py
+tests/tui_gateway/test_busy_interrupt_keeps_message.py
+# Updated: expected the old dropping behavior (retired queued prompt, "send your message again" restart notice)
+tests/tui_gateway/test_queued_prompt_restart_retire.py
+tests/gateway/test_restart_interrupt_notice.py
+# The failed-turn closers, the notices and their stored-row typing
+tests/acp_adapter/test_failed_turn_closure.py
+tests/agent/test_outer_error_retry_bound.py
+tests/hermes_state/test_legacy_refusal_repair.py
+tests/hermes_cli/test_session_message_page_owner.py
+tests/gateway/test_failure_writer_ownership.py
+tests/gateway/test_unknown_automation_settles.py
+tests/gateway/test_authority_unknown_resolution.py
+tests/gateway/test_duplicate_user_message.py
+tests/tui_gateway/test_failed_turn_retention.py
+# The queue, steer and interrupt paths
+tests/tui_gateway/test_tui_gateway_server.py
+tests/tui_gateway/test_queued_prompt_persistence.py
+tests/tui_gateway/test_tui_gateway_queue_on_busy.py
+tests/tools/test_subagent_steer.py
+tests/gateway/test_session_steer_before_adopt.py
