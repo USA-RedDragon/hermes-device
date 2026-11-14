@@ -263,8 +263,35 @@
       ((x.pin_pos || 0) - (y.pin_pos || 0)) || (Date.parse(y.updated_at) - Date.parse(x.updated_at)));
   }
 
+  // listPress says a mouse button or a finger is down in the chat list. A
+  // click is a press and a release on the same row, so the rows stay as
+  // they are until the release: a list drawn in between sends the click to
+  // the list, not to the chat, and the reader has to click again.
+  let listPress = 0;
+  let listPressed = false;
+  let listDue = false;
+  const listDown = () => {
+    listPressed = true;
+    clearTimeout(listPress);
+    listPress = setTimeout(listUp, 5000);
+  };
+  // listUp is the release: the click has been sent by the time the redraw
+  // that waited for it runs.
+  function listUp() {
+    if (!listPressed) return;
+    listPressed = false;
+    clearTimeout(listPress);
+    if (listDue) setTimeout(() => { listDue = false; drawList(); }, 0);
+  }
+
+  document.addEventListener("pointerdown", (e) => {
+    if (e.button === 0 && e.target.closest && e.target.closest("#sessions")) listDown();
+  }, true);
+  for (const up of ["pointerup", "pointercancel", "mouseup", "dragend"]) window.addEventListener(up, listUp, true);
+
   function drawList() {
     if (!lastList || pinOrder.defer()) return;
+    if (listPressed) { listDue = true; return; }
     const { backends, sessions } = lastList;
     menuOpen = false;
     const nav = $("sessions");
@@ -272,9 +299,12 @@
     const heldRow = held && held.closest && nav.contains(held) ? held.closest(".item") : null;
     const heldKey = heldRow && heldRow.dataset.key;
     const heldMore = !!held && held.classList.contains("more");
-    nav.replaceChildren();
+    // The list is built aside: when it is what the page shows, the rows stay
+    // (a hover, a press and the focus on one are not lost to a list that
+    // came back the same, as it does every few seconds).
+    const out = el("div");
     if (!backends.length) {
-      nav.append(el("p", "none", "No assistant is set up for you yet."));
+      nav.replaceChildren(el("p", "none", "No assistant is set up for you yet."));
       $("newchat").disabled = true;
       return;
     }
@@ -295,7 +325,7 @@
       for (const s of pinned) group.append(chatItem(s, many));
       if (!q) pinOrder.enable(group);
       found += pinned.length;
-      nav.append(group);
+      out.append(group);
     }
     for (const b of backends) {
       const group = el("div", "group recent");
@@ -318,26 +348,30 @@
       if (!hits.length && mine.length && !b.error && !many) continue;
       for (const s of hits) group.append(chatItem(s));
       if (!q) pinOrder.enable(group);
-      nav.append(group);
+      out.append(group);
     }
-    if (q && !found) nav.append(el("p", "none", "No chat titles match."));
+    if (q && !found) out.append(el("p", "none", "No chat titles match."));
     const open = sessions.find(isCurrent);
     if (open) chats.seen(open);
-    if (sideTop !== null) { nav.scrollTop = sideTop; sideTop = null; }
-    search.draw(nav);
-    if (heldKey) refocus(heldKey, heldMore);
+    search.draw(out);
     const archived = sessions.filter((s) => s.archived).sort(order);
     if (archived.length) {
       const tg = el("button", "link archived-toggle", (showArchived ? "Hide" : "Show") + " archived chats (" + archived.length + ")");
       tg.type = "button";
       tg.onclick = () => { showArchived = !showArchived; drawList(); };
-      nav.append(tg);
+      out.append(tg);
       if (showArchived) {
         const group = el("div", "group archived");
         for (const s of archived.filter(match)) group.append(chatItem(s));
-        nav.append(group);
+        out.append(group);
       }
     }
+    // A search draws results whose handlers hold what the page learned
+    // after the text, so only a list without one is kept as it is.
+    const same = !q && sideTop === null && out.innerHTML === nav.innerHTML;
+    if (!same) nav.replaceChildren(...out.childNodes);
+    if (sideTop !== null) { nav.scrollTop = sideTop; sideTop = null; }
+    if (heldKey && !same) refocus(heldKey, heldMore);
   }
 
   // refocus puts keyboard focus back on a row after the list was redrawn:
