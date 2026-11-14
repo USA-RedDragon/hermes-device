@@ -476,6 +476,67 @@ window.hubMarkdown = (() => {
     }
   }
 
+  // plainPara says a paragraph of lines (no blank line in it) is a block that
+  // nothing after the next blank line can join: no list item, quote, indented
+  // line or fence in it, which a loose list or a continuation could extend.
+  const plainPara = (ls) => ls.every((l) => !/^[ \t]/.test(l) && !ITEM.test(l) && !QUOTE.test(l) && !FENCE.test(l));
+
+  // cutAt returns the line number where the open part of lines starts: the
+  // start of the last paragraph after a plain one, outside any code fence,
+  // from line from on. It is from when there is no such place.
+  function cutAt(lines, from) {
+    let cut = from;
+    let fence = null;
+    let start = from;
+    let prevPlain = false;
+    for (let i = from; i <= lines.length; i++) {
+      const l = i < lines.length ? lines[i] : "";
+      if (fence) {
+        const m = FENCE.exec(l);
+        if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2]) { fence = null; }
+        if (!fence) start = i + 1, prevPlain = false;
+        continue;
+      }
+      if (i < lines.length && FENCE.test(l)) { fence = FENCE.exec(l)[1]; continue; }
+      if (l.trim() !== "") continue;
+      // A blank line ends the paragraph that began at start.
+      const para = lines.slice(start, i);
+      if (para.length) {
+        prevPlain = plainPara(para);
+        // The paragraph after it opens at the next non-blank line.
+        let j = i + 1;
+        while (j < lines.length && lines[j].trim() === "") j++;
+        if (prevPlain && j < lines.length && !/^[ \t]/.test(lines[j])) cut = j;
+      }
+      start = i + 1;
+    }
+    return cut;
+  }
+
+  // incremental draws a streaming reply: the blocks before the cut stay as
+  // drawn, the rest is drawn again.
+  function incremental(node, lines) {
+    let st = node.mdInc;
+    const head = st ? lines.slice(0, st.lines).join("\n") : "";
+    if (!st || head !== st.text || node.childNodes.length < st.nodes) {
+      node.replaceChildren();
+      st = { lines: 0, text: "", nodes: 0 };
+    }
+    const cut = cutAt(lines, st.lines);
+    const keep = st.nodes;
+    while (node.childNodes.length > keep) node.removeChild(node.lastChild);
+    if (cut > st.lines) {
+      const f = document.createDocumentFragment();
+      blocks(lines.slice(st.lines, cut), f, false, 0);
+      node.appendChild(f);
+      st = { lines: cut, text: lines.slice(0, cut).join("\n"), nodes: node.childNodes.length };
+    }
+    const f = document.createDocumentFragment();
+    blocks(lines.slice(st.lines), f, false, 0);
+    node.appendChild(f);
+    node.mdInc = st;
+  }
+
   // localMedia, set while render runs with a hook, turns a link or image
   // whose target is an absolute path into a node, or null to show its label.
   let localMedia = null;
@@ -485,15 +546,27 @@ window.hubMarkdown = (() => {
   // image that names an absolute local path; without it such a target
   // shows as its label. On any failure the text shows as it came,
   // unformatted.
-  function render(node, text, local) {
+  //
+  // With inc true the text is a reply that is still streaming, and render
+  // keeps what it drew of the blocks that cannot change any more (node.mdInc):
+  // only the open last blocks are parsed and drawn again. The final render
+  // (inc false) draws it all, so the end state is the same as ever.
+  function render(node, text, local, inc) {
     const raw = String(text);
     localMedia = local || null;
     try {
-      const frag = document.createDocumentFragment();
-      blocks(raw.replace(/\r\n?/g, "\n").split("\n"), frag, false, 0);
-      node.replaceChildren(frag);
+      const lines = raw.replace(/\r\n?/g, "\n").split("\n");
+      if (inc) {
+        incremental(node, lines);
+      } else {
+        node.mdInc = null;
+        const frag = document.createDocumentFragment();
+        blocks(lines, frag, false, 0);
+        node.replaceChildren(frag);
+      }
       node.classList.remove("plain");
     } catch (_) {
+      node.mdInc = null;
       node.textContent = raw;
       node.classList.add("plain");
     } finally {

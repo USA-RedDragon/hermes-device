@@ -986,7 +986,8 @@
     showText(node, final) {
       const pg = window.HubPageBlocks.pageBlocks(node.raw || "", !final);
       const m = mediaDirectives(pg.text);
-      render(node, final ? m.text : hidePending(m.text), final ? (p, label, image) => markdownMedia(this.base, p, label, image) : null);
+      // A streamed reply draws only its open last blocks again each frame.
+      render(node, final ? m.text : hidePending(m.text), final ? (p, label, image) => markdownMedia(this.base, p, label, image) : null, !final);
       // A page whose closing fence has streamed in gets its card at once;
       // only a page still being typed shows the wait note.
       if (pg.pages.length) {
@@ -1889,7 +1890,7 @@
     return head + " (" + where + ")";
   }
 
-  const render = (node, raw, local) => window.hubMarkdown.render(node, raw, local);
+  const render = (node, raw, local, inc) => window.hubMarkdown.render(node, raw, local, inc);
 
   // MEDIA:<path> directives in a reply name files on the Hermes server or
   // the chat's computer for the user. This follows hub.MediaDirectives in the hub, which decides
