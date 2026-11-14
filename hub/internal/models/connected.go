@@ -76,7 +76,7 @@ func (s *Service) connectedCached(ctx context.Context, r device.Requester, backe
 		gen := e.gen
 		c.mu.Unlock()
 		if start {
-			go s.refreshConnected(r, backendID, gen)
+			go s.refreshConnected(context.WithoutCancel(ctx), r, backendID, gen)
 		}
 		return data, nil
 	}
@@ -98,8 +98,9 @@ func (c *seenConnected) store(backendID string, gen int, data json.RawMessage) {
 	}
 }
 
-func (s *Service) refreshConnected(r device.Requester, backendID string, gen int) {
-	ctx, cancel := context.WithTimeout(context.Background(), connectedLimit+5*time.Second)
+func (s *Service) refreshConnected(parent context.Context, r device.Requester, backendID string, gen int) {
+	// parent is the request's context kept alive past its end.
+	ctx, cancel := context.WithTimeout(parent, connectedLimit+5*time.Second)
 	defer cancel()
 	data, err := s.connected(ctx, r)
 	c := &s.seen
