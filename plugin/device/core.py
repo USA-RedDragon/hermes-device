@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterable, Optional
 logger = logging.getLogger("hermes_device")
 
 PLUGIN_ID = "device"
-PLUGIN_VERSION = "0.26.7"
+PLUGIN_VERSION = "0.26.8"
 
 PROTOCOL_VERSION = 3
 MIN_PROTOCOL_VERSION = 2
