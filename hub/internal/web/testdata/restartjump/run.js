@@ -27,7 +27,7 @@ const preload = `() => {
   window.__reports = [];
   const f0 = window.fetch;
   window.fetch = function (u, o) {
-    if (String(u).includes("/api/view-report")) window.__reports.push(o && o.body);
+    if (String(u).includes("/api/view-report")) { if (!String(o && o.body).includes('"kind":"loaded"')) window.__reports.push(o && o.body); }
     return f0.apply(this, arguments);
   };
   window.__wheels = [];

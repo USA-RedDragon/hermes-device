@@ -713,7 +713,7 @@
       place,
       changed: () => {
         if (s.pinned()) unseen = 0;
-        else viewLeft();
+        vreport.changed();
         // A chat that is still loading has no latest to jump to.
         const hide = s.pinned() || log.hidden || !!(view && !view.loaded);
         if (jump.hidden !== hide) jump.hidden = hide;
@@ -792,25 +792,11 @@
     return s;
   })();
 
-  // viewLeft tells the hub when a chat opened in the last 15 s is no longer
-  // shown at its end and the reader did nothing in it, once per open: the
-  // log's last moves and the chat's events, for the hub's log. A reader who
-  // lands on older messages after a switch should never see that.
-  let viewTold = null;
-  function viewLeft() {
-    const v = view;
-    if (!v || !v.loaded || viewTold === v || stick.acted() || Date.now() - v.openedAt > 15000) return;
-    viewTold = v;
-    const log = $("log");
-    const stack = String(new Error().stack || "").split("\n").slice(1, 8).join(" | ").slice(0, 800);
-    setTimeout(() => {
-      if (view !== v || stick.pinned()) return;
-      const body = { backend: v.backend, session: v.session, ms: Date.now() - v.openedAt,
-        gap: Math.round(log.scrollHeight - log.scrollTop - log.clientHeight), trail: stick.trail(), events: (v.kinds || []).slice(-20),
-        stack };
-      api("POST", "/api/view-report", body).catch(() => { /* only a report */ });
-    }, 300);
-  }
+  // vreport tells the hub when the chat shown leaves its newest message and
+  // the reader did nothing in it, at any time, at most once every 30 s. A
+  // reader who lands on older messages after a switch or a restart should
+  // never see that.
+  const vreport = window.HubViewReport({ view: () => view, stick, log: $("log"), csrf: () => csrf });
 
   // A snapshot renders its newest rows first: at least firstRows rows and
   // firstChars characters, in whole turns. The older rows follow in the
@@ -1704,7 +1690,7 @@
       }
       n.scrollIntoView({ block: "center" });
       // The search put the reader there: not a view that went astray.
-      viewTold = this;
+      vreport.excuse(3000);
       stick.look();
       n.classList.add("flash");
       setTimeout(() => n.classList.remove("flash"), 2500);
@@ -3392,7 +3378,7 @@
         if (first) mark("event");
         let e;
         try { e = JSON.parse(m.data); } catch (_) { return; }
-        if (e.kind === "hub.reconnect") { follow.moving(); return; }
+        if (e.kind === "hub.reconnect") { vreport.reconnected(); follow.moving(); return; }
         // The hub's copy of a chat it is still fetching: a page that shows
         // the chat already would swap it for an older one.
         if (e.provisional && chat.loaded) return;
@@ -3412,7 +3398,7 @@
       },
       lost: () => banner("Connection lost. Reconnecting.", false, "stream"),
       back: () => clearBanner("stream"),
-      healthy: () => updates.check(),
+      healthy: () => { vreport.reconnected(); updates.check(); },
       failed: async () => {
         try { await api("GET", "/api/me"); } catch (_) { return; }
         banner("Could not open this chat. Reconnecting.", true, "stream");
@@ -4051,7 +4037,7 @@
         if (!n) chat.log.scrollTop = st.log.top;
         else chat.log.scrollTop += n.getBoundingClientRect().top - chat.log.getBoundingClientRect().top - a.off;
         // The reader's place from before the reload, not a view astray.
-        viewTold = chat;
+        vreport.excuse(3000);
         stick.release();
       };
       place();
@@ -4134,6 +4120,7 @@
       csrf = me.csrf;
       $("who").textContent = me.display || me.user || "";
     } catch (_) { return; }
+    vreport.loaded(me.version);
     $("menu").onclick = () => openSide(true);
     $("qpbtn").onclick = () => quickPanel($("qpanel").hidden);
     $("qpscrim").onclick = () => quickPanel(false);
