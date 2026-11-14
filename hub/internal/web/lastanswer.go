@@ -139,15 +139,16 @@ func (s *Server) lastAnswer(h http.HandlerFunc) http.HandlerFunc {
 // requests are answered from the hub's memory and not after a round trip
 // to Hermes. ev is the request that opened the chat's event stream.
 func (s *Server) warm(ev *http.Request, user string) {
-	base := strings.TrimSuffix(ev.URL.EscapedPath(), "/events")
+	base := strings.TrimSuffix(ev.URL.Path, "/events")
 	for _, x := range []struct {
 		path string
 		h    http.HandlerFunc
 	}{{"/activity", s.handleActivity}, {"/place", s.handlePlace}} {
-		r, err := http.NewRequestWithContext(context.WithoutCancel(ev.Context()), http.MethodGet, base+x.path, nil)
-		if err != nil {
-			continue
-		}
+		// The same request as the page will make, made here: no network.
+		r := ev.Clone(context.WithoutCancel(ev.Context()))
+		u := *ev.URL
+		u.Path, u.RawPath, u.RawQuery = base+x.path, "", ""
+		r.URL, r.RequestURI = &u, u.RequestURI()
 		r.SetPathValue("backend", ev.PathValue("backend"))
 		r.SetPathValue("session", ev.PathValue("session"))
 		key := lastKey(user, r)

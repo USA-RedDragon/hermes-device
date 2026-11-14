@@ -515,8 +515,10 @@ func readPost(r *http.Request) bool {
 // listCtx asks the service for a chat list that shows user's own changes.
 func (s *Server) listCtx(ctx context.Context, user string) context.Context {
 	ctx = hub.WithCached(ctx)
-	if t, ok := s.wrote.Load(user); ok {
-		ctx = hub.WithListAfter(ctx, t.(time.Time))
+	if v, ok := s.wrote.Load(user); ok {
+		if t, ok := v.(time.Time); ok {
+			ctx = hub.WithListAfter(ctx, t)
+		}
 	}
 	return ctx
 }

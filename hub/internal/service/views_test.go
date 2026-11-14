@@ -55,7 +55,7 @@ func listsTheCopy(ctx context.Context, t *testing.T, name string, svc *service.S
 	list, err := svc.Sessions(ctx, userAlice)
 	ue := hub.Unreachable(err)
 	marked := ue != nil && ue.Pending[backendPC] && ue.Backends[backendPC] == ""
-	if (!marked && !(recent && err == nil)) || time.Since(started) > 2*time.Second {
+	if (!marked && (!recent || err != nil)) || time.Since(started) > 2*time.Second {
 		t.Fatalf("%s: list while silent = %v after %s", name, err, time.Since(started))
 	}
 	for _, s := range list {

@@ -39,7 +39,7 @@ func (t *timingWriter) stamp() {
 		return
 	}
 	t.wrote = true
-	h := t.ResponseWriter.Header()
+	h := t.Header()
 	switch v := h.Get(serverTiming); {
 	case v == "":
 		h.Set(serverTiming, "hub;dur="+msDur(time.Since(t.began)))
