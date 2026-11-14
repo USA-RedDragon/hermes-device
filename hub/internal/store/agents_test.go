@@ -66,24 +66,37 @@ func TestAgentMessages(t *testing.T) {
 		if err != nil || c != (hub.AgentCounts{FromRoot: 1, Pair: 0, Backend: 3}) {
 			t.Fatalf("counts = %+v %v", c, err)
 		}
-		// A message inside one delegation tree is not counted.
-		if err := s.AddAgentMessage(ctx, hub.AgentMessage{ID: "am_tree", BackendID: "b1", FromSession: "s1", FromRoot: "s1",
-			ToSession: "s2", Hop: 1, Text: "t", Mode: hub.AgentModeInbox, Status: hub.AgentStatusSending, InTree: true,
-			CreatedAt: now}); err != nil {
-			t.Fatal(err)
-		}
-		if m, ok, err := s.AgentMessage(ctx, "b1", "am_tree"); err != nil || !ok || !m.InTree {
-			t.Fatalf("in-tree message = %+v %v %v", m, ok, err)
-		}
-		if m, _, _ := s.AgentMessage(ctx, "b1", "am_1"); m.InTree {
-			t.Fatal("a cross-tree message is marked in-tree")
-		}
-		c, err = s.AgentCounts(ctx, "b1", "s1", "s2", now.Add(-10*time.Minute), now.Add(-time.Hour))
-		if err != nil || c != (hub.AgentCounts{FromRoot: 1, Pair: 0, Backend: 3}) {
-			t.Fatalf("counts with an in-tree message = %+v %v", c, err)
-		}
 		c, err = s.AgentCounts(ctx, "b1", "s1", "s2", now.Add(-time.Hour), now.Add(-time.Hour))
 		if err != nil || c != (hub.AgentCounts{FromRoot: 2, Pair: 1, Backend: 3}) {
+			t.Fatalf("counts = %+v %v", c, err)
+		}
+	})
+}
+
+func TestAgentCountsSkipTreeMessages(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		now := time.UnixMilli(1_800_000_000_000)
+		s.SetClock(func() time.Time { return now })
+		add := func(id, to string, inTree bool) {
+			t.Helper()
+			if err := s.AddAgentMessage(ctx, hub.AgentMessage{ID: id, BackendID: "b1", FromSession: "s1", FromRoot: "s1",
+				ToSession: to, Hop: 1, Text: "t", Mode: hub.AgentModeInbox, Status: hub.AgentStatusSending,
+				InTree: inTree, CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		add("am_out", "s2", false)
+		add("am_tree1", "c1", true)
+		add("am_tree2", "s2", true)
+		for id, want := range map[string]bool{"am_out": false, "am_tree1": true} {
+			if m, ok, err := s.AgentMessage(ctx, "b1", id); err != nil || !ok || m.InTree != want {
+				t.Fatalf("%s = %+v %v %v", id, m, ok, err)
+			}
+		}
+		c, err := s.AgentCounts(ctx, "b1", "s1", "s2", now.Add(-10*time.Minute), now.Add(-time.Hour))
+		if err != nil || c != (hub.AgentCounts{FromRoot: 1, Pair: 1, Backend: 1}) {
 			t.Fatalf("counts = %+v %v", c, err)
 		}
 	})
