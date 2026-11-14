@@ -1,0 +1,464 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 00:57:04 -0600
+Subject: [PATCH] fix(approval): retry a smart approval judge the provider
+ could not serve
+
+When a Claude account hit its weekly limit, the provenance review's own model call failed the same way and the card read "Smart approval could not decide (the review model call failed: ClaudeAPIError)". A judge call that fails for a provider limit (429, plan or usage limit, every pool account at its limit) or a transient error (timeout, overloaded, 5xx, connection) is now tried again before the user is asked: once more on the same route, where the claude-pool provider moves to its next account, then for stage 2 on the stage-1 route (smart_fast_model) with the stage-2 prompt. The retry's verdict is used. The same-route retry is skipped after a timeout (it already cost a whole window and call_llm's own retries) and when every pool account is at its limit. The fallback is skipped when the stage-1 route already failed in the same review, is the same model, or is self-hosted while stage 2 is hosted; a self-hosted fallback's allow gets the same 0086/0095 holds. No new config keys and no sleeps: at most two calls per route.
+
+A judge failure never allows. When every route fails, the verdict stays unsure and the card says "Smart approval could not review this: the review model was unavailable (all Claude accounts are at their limit). Approve or deny it yourself.", with the pool's reset time when it has one. Other failures are not retried and keep asking, but the card no longer names the exception class ("Smart approval could not decide (the review model call failed)"); the log keeps it.
+---
+ .../test_smart_provenance_judge_retry.py      | 247 ++++++++++++++++++
+ tools/approval_automode.py                    | 142 +++++++++-
+ 2 files changed, 383 insertions(+), 6 deletions(-)
+ create mode 100644 tests/tools/test_smart_provenance_judge_retry.py
+
+diff --git a/tests/tools/test_smart_provenance_judge_retry.py b/tests/tools/test_smart_provenance_judge_retry.py
+new file mode 100644
+index 0000000000..6b4b633417
+--- /dev/null
++++ b/tests/tools/test_smart_provenance_judge_retry.py
+@@ -0,0 +1,247 @@
++"""Smart approval (provenance) retries a judge call the provider could not serve, and never allows on failure.
++
++Invariants:
++  1. A judge call that fails for a provider limit (429, plan limit, "hit your limit", every pool account at its
++     limit) or a transient error (timeout, overloaded, 5xx, connection) is tried again before the user is asked:
++     once more on the same route (the account pool moves to its next account), then, for stage 2, on the other
++     stage's route. The verdict is the retry's.
++  2. Every pool account at its limit skips the same-route retry (the pool already tried them all); a route that
++     already failed this way in the same review is not tried again; a self-hosted route never stands in for a
++     hosted stage-2 judge.
++  3. When every route fails, the verdict is unsure (the user is asked) and the card says plainly that the reviewer
++     was unavailable, with no exception class, upstream text or request id.
++  4. Any other failure is not retried and its card names no exception class.
++"""
++
++from __future__ import annotations
++
++from types import SimpleNamespace
++
++import pytest
++
++from tools import approval_automode as A
++
++BLOCK = "<block>yes</block><category>Git Destructive</category><reason>[Git Destructive] it rewrites main</reason>"
++
++
++class PoolExhausted(RuntimeError):
++    """Same class name as the claude-accounts pool's."""
++
++
++class ClaudeAPIError(RuntimeError):
++    pass
++
++
++LIMIT = ClaudeAPIError("You've hit your limit · resets 3pm (America/Chicago) request_id=req_011CabcDEF")
++
++
++@pytest.fixture()
++def judge(monkeypatch):
++    """Route stage -> list of results (an exception to raise or a reply), consumed in order."""
++    calls = []
++    script: dict[int, list] = {1: [], 2: []}
++
++    def complete(stage, system, user, max_tokens):
++        calls.append({"route": stage, "prompt": 2 if system.endswith(A.STAGE2_SUFFIX) else 1})
++        result = script[stage].pop(0) if script[stage] else "<block>no</block>"
++        if isinstance(result, BaseException):
++            raise result
++        return result
++
++    monkeypatch.setattr(A, "_self_hosted_judge", lambda stage: False)
++    A.set_complete_override(complete)
++    yield script, calls
++    A.set_complete_override(None)
++
++
++def _review(skip=""):
++    return A.review_input(A.ReviewInput(lines=["User: push my branch"], action="{}", skip_stage1=skip))
++
++
++def _routes(calls):
++    return [(c["route"], c["prompt"]) for c in calls]
++
++
++def _plain(card: str) -> None:
++    assert card.startswith("Smart approval could not review this: the review model was unavailable (")
++    assert card.endswith("Approve or deny it yourself.")
++    for raw in ("ClaudeAPIError", "PoolExhausted", "TimeoutError", "req_", "request_id", "hit your limit"):
++        assert raw not in card
++
++
++def test_stage2_limit_retries_same_route_and_uses_its_verdict(judge):
++    script, calls = judge
++    script[1] = ["<block>yes</block>"]
++    script[2] = [LIMIT, BLOCK]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2), (2, 2)]
++    assert v.decision == "block" and v.rule == "Git Destructive"
++
++
++def test_stage2_limit_twice_falls_back_to_the_other_stage_route(judge):
++    script, calls = judge
++    script[1] = ["<block>yes</block>", BLOCK]
++    script[2] = [LIMIT, LIMIT]
++    v = _review()
++    # The fallback runs the stage-2 prompt on stage 1's route; its verdict is the stage-2 verdict.
++    assert _routes(calls) == [(1, 1), (2, 2), (2, 2), (1, 2)]
++    assert v.decision == "block" and v.rule == "Git Destructive" and v.stage == 2
++    assert v.detail.get("stage2_route") == 1
++
++
++def test_stage2_timeout_goes_to_the_other_route_and_its_allow_stands(judge):
++    script, calls = judge
++    # A timeout already cost a whole window (and call_llm retried it), so the same route is not tried again.
++    script[2] = [TimeoutError("read timed out")]
++    script[1] = ["<block>yes</block>", "<block>no</block>"]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2), (1, 2)]
++    assert v.decision == "allow" and v.stage == 2
++
++
++def test_stage1_limit_retries_then_runs_stage2(judge):
++    script, calls = judge
++    script[1] = [LIMIT, LIMIT]
++    script[2] = [BLOCK]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (1, 1), (2, 2)]
++    assert v.decision == "block"
++
++
++def test_stage1_retry_answer_counts(judge):
++    script, calls = judge
++    script[1] = [RuntimeError("API Error: 529 Overloaded"), "<block>no</block>"]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (1, 1)]
++    assert v.decision == "allow" and v.stage == 1
++
++
++def test_all_routes_at_limit_asks_with_the_plain_card(judge):
++    script, calls = judge
++    script[1] = [LIMIT, LIMIT]
++    script[2] = [LIMIT, LIMIT]
++    v = _review()
++    # Stage 1's route already failed this review, so stage 2 does not fall back onto it.
++    assert _routes(calls) == [(1, 1), (1, 1), (2, 2), (2, 2)]
++    assert v.decision == "unsure" and v.stage == 2
++    _plain(v.card_text)
++    assert "usage limit" in v.card_text
++
++
++def test_skipped_stage1_failure_on_all_routes_asks(judge):
++    script, calls = judge
++    script[1] = [LIMIT]
++    script[2] = [LIMIT, LIMIT]
++    v = _review(skip="runs code fetched this session")
++    assert _routes(calls) == [(2, 2), (2, 2), (1, 2)]
++    assert v.decision == "unsure"
++    _plain(v.card_text)
++
++
++def test_pool_exhausted_skips_same_route_retry_and_names_the_pool(judge):
++    script, calls = judge
++    full = PoolExhausted("All Claude accounts are at their limit. The first frees up at 10:09 PM CST.")
++    script[1] = [full, full]
++    script[2] = [full, full]
++    v = _review(skip="runs code fetched this session")
++    assert _routes(calls) == [(2, 2), (1, 2)]
++    assert v.decision == "unsure"
++    _plain(v.card_text)
++    assert v.card_text == ("Smart approval could not review this: the review model was unavailable (all Claude "
++                           "accounts are at their limit; the first frees up at 10:09 PM CST). Approve or deny it "
++                           "yourself.")
++
++
++def test_wrapped_pool_exhausted_is_recognised(judge):
++    script, calls = judge
++    try:
++        raise PoolExhausted("All Claude accounts are at their limit.")
++    except PoolExhausted as inner:
++        wrapped = RuntimeError("auxiliary call failed")
++        wrapped.__cause__ = inner
++    script[1] = [wrapped]
++    script[2] = [wrapped]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2)]
++    assert v.decision == "unsure" and "all Claude accounts are at their limit)" in v.card_text
++
++
++def test_transient_failure_on_all_routes_says_unavailable(judge):
++    script, calls = judge
++    script[1] = [TimeoutError("read timed out")]
++    script[2] = [ConnectionError("Connection reset by peer")] * 2
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2), (2, 2)]
++    assert v.decision == "unsure"
++    _plain(v.card_text)
++
++
++@pytest.mark.parametrize("exc", [ValueError("bad"), ClaudeAPIError("invalid x-api-key")])
++def test_other_failures_are_not_retried_and_name_no_class(judge, exc):
++    script, calls = judge
++    script[1] = ["<block>yes</block>"]
++    script[2] = [exc]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2)]
++    assert v.decision == "unsure"
++    assert type(exc).__name__ not in v.card_text and "invalid" not in v.card_text
++    assert v.card_text == "Smart approval could not decide (the review model call failed)"
++
++
++def test_no_fallback_onto_a_self_hosted_route(judge, monkeypatch):
++    script, calls = judge
++    monkeypatch.setattr(A, "_self_hosted_judge", lambda stage: stage == 1)
++    script[1] = ["<block>yes</block>", "<block>no</block>"]
++    script[2] = [LIMIT, LIMIT]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2), (2, 2)]
++    assert v.decision == "unsure"
++    _plain(v.card_text)
++
++
++def test_window_error_is_not_retried(judge):
++    script, calls = judge
++    script[1] = ["<block>yes</block>"]
++    script[2] = [A.JudgeWindowError("the stage-2 review prompt does not fit")]
++    v = _review()
++    assert _routes(calls) == [(1, 1), (2, 2)]
++    assert v.decision == "unsure" and v.detail.get("window")
++
++
++@pytest.mark.parametrize("exc,kind", [
++    (LIMIT, "limit"),
++    (ClaudeAPIError("Claude AI usage limit reached|1700000000"), "limit"),
++    (type("RateLimitError", (Exception,), {"status_code": 429})("slow down"), "limit"),
++    (PoolExhausted("No Claude account is signed in."), "pool"),
++    (RuntimeError("API Error: 529 Overloaded"), "transient"),
++    (TimeoutError("read timed out"), "timeout"),
++    (ClaudeAPIError("request timed out"), "timeout"),
++    (ConnectionError("Connection reset by peer"), "transient"),
++    (ValueError("bad answer"), ""),
++    (ClaudeAPIError("invalid x-api-key"), ""),
++])
++def test_unavailable_kind(exc, kind):
++    assert A._unavailable_kind(exc) == kind
++
++
++def test_real_route_fallback_calls_the_other_stage_model(monkeypatch):
++    """Without an override, the fallback calls call_llm with the other stage's configured route."""
++    import agent.auxiliary_client as aux
++
++    models = []
++
++    def call_llm(**kwargs):
++        models.append((kwargs.get("model"), kwargs["messages"][0]["content"].endswith(A.STAGE2_SUFFIX)))
++        if kwargs.get("model") == "claude-sonnet-4-6":
++            raise LIMIT
++        reply = "<block>yes</block>" if not models[-1][1] else BLOCK
++        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))], usage=None)
++
++    monkeypatch.setattr(aux, "call_llm", call_llm)
++    monkeypatch.setattr(A, "_config", lambda: {"smart_fast_model": "claude-haiku-4-5", "smart_model": "claude-sonnet-4-6"})
++    monkeypatch.setattr(A, "_served_window", lambda route: None)
++    A.set_complete_override(None)
++    v = _review()
++    assert models == [("claude-haiku-4-5", False), ("claude-sonnet-4-6", True), ("claude-sonnet-4-6", True),
++                      ("claude-haiku-4-5", True)]
++    assert v.decision == "block" and v.detail.get("stage2_route") == 1
+diff --git a/tools/approval_automode.py b/tools/approval_automode.py
+index b9c462db2c..fc0ec07b14 100644
+--- a/tools/approval_automode.py
++++ b/tools/approval_automode.py
+@@ -841,6 +841,9 @@ class Verdict:
+     @property
+     def card_text(self) -> str:
+         """Plain words for the agent and the approval card."""
++        if self.decision == "unsure" and self.detail.get("unavailable"):
++            return (f"Smart approval could not review this: the review model was unavailable ({self.reason}). "
++                    "Approve or deny it yourself.")
+         if self.decision == "unsure":
+             return f"Smart approval could not decide ({self.reason or 'no valid answer from the review model'})"
+         reason = self.reason.strip()
+@@ -988,6 +991,8 @@ _TRUNCATED_RATIO = 0.6
+ 
+ 
+ def _complete(stage: int, system: str, user: str, max_tokens: int) -> str:
++    """One judge call on ``stage``'s route (its configured model). The prompt says which stage is asked: a
++    fallback runs the stage-2 prompt on the stage-1 route. An override gets the route as its ``stage``."""
+     if _complete_override is not None:
+         return _complete_override(stage, system, user, max_tokens)
+     from agent.auxiliary_client import _get_task_timeout, call_llm
+@@ -1014,6 +1019,121 @@ def _self_hosted_judge(stage: int) -> bool:
+     return _served_window(_stage_route(stage)) is not None
+ 
+ 
++# --- a judge the provider could not serve -----------------------------------------------------------------
++
++_LIMIT_REASONS = frozenset({"rate_limit", "upstream_rate_limit", "billing"})
++_TRANSIENT_REASONS = frozenset({"timeout", "overloaded", "server_error"})
++_LIMIT_TEXT = re.compile(r"hit your (?:\w+ )*limit|usage limit|rate.?limit|limit reached|out of (?:extra )?usage|"
++                         r"quota|too many requests|\b429\b", re.I)
++_TIMEOUT_TEXT = re.compile(r"timed? ?out|timeout", re.I)
++_CONNECTION_TEXT = re.compile(r"connection (?:error|reset|refused|aborted|closed)|\boverloaded\b|"
++                              r"\b(?:500|502|503|504|529)\b", re.I)
++# What the card says per kind; a PoolExhausted's own message (the pool's plain words) is used when it has one.
++_UNAVAILABLE_WORDS = {"pool": "all Claude accounts are at their limit", "limit": "it is at its usage limit",
++                      "timeout": "it did not answer in time",
++                      "transient": "the provider was overloaded or could not be reached"}
++_UNAVAILABLE_RANK = ("pool", "limit", "transient", "timeout")
++
++
++class JudgeUnavailable(RuntimeError):
++    """Every route tried for a judge call failed for a provider limit or a transient error."""
++
++    def __init__(self, kind: str, words: str):
++        super().__init__(words)
++        self.kind, self.words = kind, words
++
++
++def _chain(exc: BaseException):
++    seen = set()
++    while exc is not None and id(exc) not in seen:
++        seen.add(id(exc))
++        yield exc
++        exc = exc.__cause__ or exc.__context__
++
++
++def _unavailable_kind(exc: BaseException) -> str:
++    """"pool" (every pool account at its limit), "limit" (429, plan or usage limit), "timeout", "transient"
++    (overloaded, 5xx, connection) or "" for any other failure, which is not retried."""
++    if isinstance(exc, (JudgeWindowError, JudgeUnavailable)):
++        return ""
++    for link in _chain(exc):
++        if type(link).__name__ == "PoolExhausted":
++            return "pool"
++    reason = ""
++    try:
++        from agent.error_classifier import classify_api_error
++        reason = classify_api_error(exc).reason.value
++    except Exception as err:  # the classifier must not turn a failed review into anything but an ask
++        logger.debug("Smart approval (provenance): judge error unclassified (%s)", err)
++    text = " ".join(str(link) for link in _chain(exc))[:2000]
++    if reason in _LIMIT_REASONS or _LIMIT_TEXT.search(text):
++        return "limit"
++    if any(isinstance(link, TimeoutError) or "Timeout" in type(link).__name__ for link in _chain(exc)):
++        return "timeout"
++    if any(isinstance(link, ConnectionError) or "Connection" in type(link).__name__ for link in _chain(exc)):
++        return "transient"
++    if reason in _TRANSIENT_REASONS:
++        return "timeout" if _TIMEOUT_TEXT.search(text) else "transient"
++    if _TIMEOUT_TEXT.search(text):
++        return "timeout"
++    return "transient" if _CONNECTION_TEXT.search(text) else ""
++
++
++def _unavailable_words(kind: str, exc: BaseException) -> str:
++    if kind == "pool":
++        link = next((e for e in _chain(exc) if type(e).__name__ == "PoolExhausted"), None)
++        own = str(link or "").strip().rstrip(".")
++        if own and len(own) < 160 and own.lower().startswith(("all claude accounts", "no claude account")):
++            # The pool's line is two sentences ("... at their limit. The first frees up at 10:09 PM CST."); in
++            # the card's brackets it reads as one.
++            own = own.replace(". The first", "; the first").replace(". Sign", "; sign")
++            return own[0].lower() + own[1:]
++    return _UNAVAILABLE_WORDS[kind]
++
++
++def _routes_differ() -> bool:
++    if _complete_override is not None:
++        return True
++    return _stage_route(1) != _stage_route(2)
++
++
++def _judge(stage: int, system: str, user: str, max_tokens: int, down: dict, *,
++           fixed: int | None = None) -> tuple[str, int]:
++    """(reply, route) of one judge call that the provider failing does not end at once: the same route once more
++    (the account pool moves to its next account; skipped after a timeout, which already cost a whole window and
++    call_llm's own retries, and when every pool account is at its limit), then for stage 2 the stage-1 route,
++    unless that route already failed this review, is the same model, or is self-hosted while stage 2 is hosted.
++    ``down`` records failed routes across the review. Raises JudgeUnavailable when every route failed; any other
++    error propagates untried (the review asks)."""
++    failures: list[tuple[str, BaseException]] = []
++
++    def attempt(route: int) -> str | None:
++        try:
++            return _complete(route, system, user, max_tokens)
++        except Exception as exc:
++            kind = _unavailable_kind(exc)
++            if not kind:
++                raise
++            logger.warning("Smart approval (provenance): stage-%d judge unavailable on the stage-%d route (%s; %s: "
++                           "%s)", stage, route, kind, type(exc).__name__, str(exc)[:300])
++            down[route] = kind
++            failures.append((kind, exc))
++            return None
++
++    own = stage if fixed is None else fixed
++    reply = attempt(own)
++    if reply is None and fixed is None and down[own] not in ("pool", "timeout"):
++        reply = attempt(own)  # the same model again; the pool picks its next account
++    if reply is None and fixed is None and stage == 2 and 1 not in down and _routes_differ() \
++            and not (_self_hosted_judge(1) and not _self_hosted_judge(2)):
++        own = 1
++        reply = attempt(1)
++    if reply is not None:
++        return reply, own
++    kind, exc = min(failures, key=lambda f: _UNAVAILABLE_RANK.index(f[0]))
++    raise JudgeUnavailable(kind, _unavailable_words(kind, exc))
++
++
+ def _window_verdict(exc: JudgeWindowError, stage1_ms: int = 0, stage2_ms: int = 0) -> Verdict:
+     logger.warning("Smart approval (provenance): asking the user: %s", exc)
+     return Verdict("unsure", reason=str(exc), stage=2 if stage2_ms else 1, stage1_ms=stage1_ms, stage2_ms=stage2_ms,
+@@ -1025,14 +1145,16 @@ def review_input(review: ReviewInput) -> Verdict:
+     user = user_prompt(review)
+     t0 = time.monotonic()
+     first: str | None = None
++    down: dict[int, str] = {}  # routes the provider could not serve this review (a limit or a transient error)
+     if review.skip_stage1:
+         logger.info("Smart approval (provenance): stage 1 skipped: the action %s", review.skip_stage1)
+     else:
+         try:
+-            first = parse_stage1(_complete(1, system_prompt(1), user, STAGE1_MAX_TOKENS))
++            first = parse_stage1(_judge(1, system_prompt(1), user, STAGE1_MAX_TOKENS, down)[0])
+             if first is None:
+                 logger.info("Smart approval (provenance): stage 1 answer had no verdict; retrying once")
+-                first = parse_stage1(_complete(1, system_prompt(1), user + STAGE1_RETRY, STAGE1_MAX_TOKENS))
++                first = parse_stage1(_judge(1, system_prompt(1), user + STAGE1_RETRY, STAGE1_MAX_TOKENS, down,
++                                            fixed=1)[0])
+         except JudgeWindowError as exc:
+             logger.warning("Smart approval (provenance): stage 1 cannot run (%s); running stage 2", exc)
+         except Exception as exc:
+@@ -1044,19 +1166,27 @@ def review_input(review: ReviewInput) -> Verdict:
+     if first == "allow":
+         return Verdict("allow", stage=1, stage1_ms=stage1_ms)
+     t1 = time.monotonic()
++    route = 2
+     try:
+-        verdict = parse_stage2(_complete(2, system_prompt(2), user, STAGE2_MAX_TOKENS))
++        reply, route = _judge(2, system_prompt(2), user, STAGE2_MAX_TOKENS, down)
++        verdict = parse_stage2(reply)
+         if verdict.detail.get("no_verdict"):
+             logger.info("Smart approval (provenance): stage 2 answer had no verdict; retrying once")
+-            verdict = parse_stage2(_complete(2, system_prompt(2), user + STAGE2_RETRY, STAGE2_MAX_TOKENS))
++            verdict = parse_stage2(_judge(2, system_prompt(2), user + STAGE2_RETRY, STAGE2_MAX_TOKENS, down,
++                                          fixed=route)[0])
+     except JudgeWindowError as exc:
+         return _window_verdict(exc, stage1_ms, max(1, int((time.monotonic() - t1) * 1000)))
++    except JudgeUnavailable as exc:
++        logger.warning("Smart approval (provenance): no review model could answer (%s); asking the user", exc.kind)
++        verdict = Verdict("unsure", reason=exc.words, stage=2, detail={"unavailable": exc.kind})
+     except Exception as exc:
+         logger.warning("Smart approval (provenance) stage 2 failed (%s: %s)", type(exc).__name__, exc)
+-        verdict = Verdict("unsure", reason=f"the review model call failed: {type(exc).__name__}", stage=2)
++        verdict = Verdict("unsure", reason="the review model call failed", stage=2)
++    if route != 2:
++        verdict.detail["stage2_route"] = route
+     # A local judge's allow does not clear an action stage 1 was skipped for: one in a session fetch, or one an
+     # upstream dangerous-command pattern flags (qwen3-coder:30b allowed an injected force push to main).
+-    if verdict.decision == "allow" and review.skip_stage1 and _self_hosted_judge(2):
++    if verdict.decision == "allow" and review.skip_stage1 and _self_hosted_judge(route):
+         logger.warning("Smart approval (provenance): a self-hosted stage-2 judge allowed an action that %s; asking",
+                        review.skip_stage1)
+         verdict = Verdict("unsure", stage=2, reason=f"a local review model cannot clear an action that {review.skip_stage1}")
