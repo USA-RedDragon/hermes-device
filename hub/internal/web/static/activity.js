@@ -14,8 +14,8 @@
 window.HubActivity = (ctx) => {
   const { api, el } = ctx;
   const $ = (id) => document.getElementById(id);
-  const live = new Set(["run", "wait", "queued"]);
-  const stateWord = { run: "Running", queued: "Starting", ok: "Done", bad: "Failed", wait: "Needs you", stopped: "Stopped" };
+  const live = new Set(["run", "wait", "queued", "hold"]);
+  const stateWord = { run: "Running", queued: "Starting", ok: "Done", bad: "Failed", hold: "Waiting", wait: "Needs you", stopped: "Stopped" };
   const tailMax = 200;
   const narrow = () => matchMedia("(max-width: 900px)").matches;
 
@@ -73,8 +73,19 @@ window.HubActivity = (ctx) => {
       case "running": case "": case undefined: case null: return "run";
       case "completed": case "complete": case "success": return "ok";
       case "interrupted": case "cancelled": return "stopped";
+      // Ended its turn waiting on a background job; Hermes resumes it when the job exits (patch 0092).
+      case "waiting": return "hold";
       default: return "bad";
     }
+  }
+
+  // holdLine is the line of a subagent waiting on its background job: the
+  // first command, cut short, and how many more there are.
+  function holdLine(cmds) {
+    const list = (cmds || []).map(firstLine).filter(Boolean);
+    if (!list.length) return "Waiting on a background job";
+    const c = list[0].length > 70 ? list[0].slice(0, 69).trimEnd() + "\u2026" : list[0];
+    return "Waiting on " + c + (list.length > 1 ? " (+" + (list.length - 1) + " more)" : "");
   }
 
   function sub(id, p) {
@@ -195,6 +206,11 @@ window.HubActivity = (ctx) => {
         }
         break;
       case "subagent.complete":
+        // A subagent that waits on a job has not completed: Hermes resumes it.
+        if (subState(p.status) === "hold") {
+          if (live.has(r.state)) { r.state = "hold"; r.tool = null; }
+          break;
+        }
         r.state = subState(p.status || "completed");
         r.endedAt = Date.now();
         if (typeof p.duration_seconds === "number") r.startedAt = Math.min(r.startedAt, r.endedAt - p.duration_seconds * 1000);
@@ -288,7 +304,21 @@ window.HubActivity = (ctx) => {
       // a subagent is finished when one of them says so, and not because it
       // is missing from one answer.
       const want = subState(s.status);
-      if (r.byMiss && (want === "run" || want === "queued")) {
+      if (want === "hold") {
+        // Waiting is alive: it counts as running, shows what it waits on, and no miss or event ends it.
+        r.byMiss = false;
+        r.endedAt = 0;
+        r.final = false;
+        r.state = "hold";
+        r.tool = null;
+        r.now = holdLine(s.waiting_on);
+        continue;
+      }
+      if (r.state === "hold" && (want === "run" || want === "queued")) {
+        // It woke up: the job ended and Hermes resumed it.
+        r.state = want;
+        r.now = "";
+      } else if (r.byMiss && (want === "run" || want === "queued")) {
         r.byMiss = false;
         r.endedAt = 0;
         r.state = want;
@@ -613,7 +643,7 @@ window.HubActivity = (ctx) => {
   // button that opens the raw text Hermes sent, with a copy button. Anything
   // else is the subagent's own words.
   function nowLine(r) {
-    if (!(r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait")) return [el("div", "now", r.now || "")];
+    if (!(r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait" && r.state !== "hold")) return [el("div", "now", r.now || "")];
     const m = S.minis.get(r.id);
     const line = window.HubToolCard.statusLine(r.tool.name, r.tool.preview, m ? m.view.memory() : null);
     const raw = r.tool.preview; // what the tool was given (the command), never its name
@@ -670,7 +700,7 @@ window.HubActivity = (ctx) => {
   // again, since their body holds forms and a small chat.
   function rowKey(r, child) {
     let line = "";
-    if (r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait") {
+    if (r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait" && r.state !== "hold") {
       const m = S.minis.get(r.id);
       const l = window.HubToolCard.statusLine(r.tool.name, r.tool.preview, m ? m.view.memory() : null);
       line = l.icon + "|" + l.text + "|" + (r.tool.at && ago((Date.now() - r.tool.at) / 1000) ? 1 : 0) + "|" + S.raw.has(r.id) + "|" + r.tool.name + " " + r.tool.preview;

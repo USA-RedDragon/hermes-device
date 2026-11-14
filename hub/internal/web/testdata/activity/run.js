@@ -248,5 +248,46 @@ assert.ok(nowText("sa-8").includes("Running a command") && !nowText("sa-8").incl
 list = [{ id: "sa-8", goal: "Eighth", status: "running", started_at: now / 1000, tool_count: 15, last_tool: "terminal", last_preview: "ls -la" }];
 await round();
 assert.match(rowOf("sa-8").querySelector("button.now2").textContent, /^Running ls -la/);
+// A subagent that ended its turn waiting on a background job (Hermes status "waiting") is not
+// failed and not finished: it shows what it waits on, counts as running, and shows its elapsed time.
+const liveCount = () => Number(ids.actcount.textContent || 0);
+const runningBefore = liveCount();
+const longCmd = "bash /home/reddragon/Projects/dmrgo/wait.sh " + "--flag ".repeat(40) + "done";
+list = [{ id: "sa-w", goal: "Build the thing", status: "waiting", waiting_on: [longCmd, "sleep 99"], started_at: now / 1000 - 3 * 3600 - 13 * 60 }];
+await round();
+const wrow = rowOf("sa-w");
+assert.ok(wrow, "the waiting subagent has a row");
+assert.ok(!/Failed/.test(wrow.textContent), "a waiting subagent is not failed: " + wrow.textContent);
+assert.ok(!/Done/.test(wrow.textContent), "a waiting subagent is not done: " + wrow.textContent);
+assert.ok(wrow.querySelector(".state.hold"), "its own state color");
+assert.ok(!wrow.querySelector(".state.bad") && !wrow.querySelector(".state.ok"));
+assert.match(wrow.textContent, /Waiting on bash \/home\/reddragon\/Projects\/dmrgo\/wait\.sh/);
+assert.ok(wrow.textContent.includes("Waiting on ") && !wrow.textContent.includes("done"), "the command is clamped: " + wrow.textContent);
+assert.ok(wrow.textContent.includes("+1 more") || wrow.textContent.includes("1 more"), "a second command is counted: " + wrow.textContent);
+assert.match(wrow.querySelector(".time").textContent, /3\s*h|3:13|193/, "elapsed since start: " + wrow.querySelector(".time").textContent);
+assert.strictEqual(liveCount(), runningBefore + 1, "a waiting subagent counts as running");
+assert.ok(/\d+ running/.test(ids["c-sub"].textContent), ids["c-sub"].textContent);
+// Many polls later, and with the list missing it once, nothing marks it failed or finished.
+for (let i = 0; i < 4; i++) { now += 60000; await round(); }
+assert.ok(!/Failed|Done/.test(rowOf("sa-w").textContent), "still waiting: " + rowOf("sa-w").textContent);
+// A stray complete event that says waiting does not end it either.
+act.event("subagent.complete", { subagent_id: "sa-w", status: "waiting" });
+assert.ok(!/Failed|Done/.test(rowOf("sa-w").textContent) && rowOf("sa-w").querySelector(".state.hold"));
+// It resumes: the list says running and the row runs again.
+list = [{ id: "sa-w", goal: "Build the thing", status: "running", started_at: now / 1000 - 3 * 3600 - 20 * 60 }];
+await round();
+assert.ok(rowOf("sa-w").querySelector(".state.run"), "running again");
+assert.ok(!/Waiting on/.test(rowOf("sa-w").textContent));
+assert.strictEqual(liveCount(), runningBefore + 1);
+// And it waits again, then finishes once.
+list = [{ id: "sa-w", goal: "Build the thing", status: "waiting", waiting_on: ["make all"], started_at: now / 1000 - 3 * 3600 - 20 * 60 }];
+await round();
+assert.match(rowOf("sa-w").textContent, /Waiting on make all/);
+list = [{ id: "sa-w", goal: "Build the thing", status: "completed", started_at: now / 1000 - 3 * 3600 - 20 * 60 }];
+await round();
+assert.ok(rowOf("sa-w").querySelector(".state.ok"), "done");
+assert.strictEqual(liveCount(), runningBefore);
+assert.strictEqual(rowState("sa-w"), "Done");
+
 console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });

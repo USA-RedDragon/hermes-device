@@ -97,6 +97,9 @@ type Subagent struct {
 	LastPreview    string `json:"last_preview,omitempty"`
 	AcceptingSteer bool   `json:"accepting_steer"`
 	ChildSessionID string `json:"child_session_id,omitempty"`
+	// WaitingOn are the commands of the background processes a subagent with
+	// status "waiting" ended its turn on; Hermes resumes it when one exits.
+	WaitingOn []string `json:"waiting_on,omitempty"`
 }
 
 // Process is one background command of a session, running or ended.

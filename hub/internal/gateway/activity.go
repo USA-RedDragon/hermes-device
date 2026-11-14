@@ -55,6 +55,8 @@ type SubagentRow struct {
 	LastPreview    *string  `json:"last_preview"`
 	AcceptingSteer *bool    `json:"accepting_steer"`
 	ChildSessionID *string  `json:"child_session_id"`
+	// WaitingOn are the commands of the background processes a "waiting" subagent will be resumed by.
+	WaitingOn []string `json:"waiting_on"`
 }
 
 // SubagentList is subagent.list's result.

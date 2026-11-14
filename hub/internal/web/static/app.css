@@ -886,6 +886,7 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .act .state.run, .act .state.queued { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 .act .state.bad { background: var(--bad); }
 .act .state.wait { background: var(--warn); }
+.act .state.hold { background: #8a5cd6; }
 .act .state.stopped { background: var(--muted); }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .act .state.run, .act .state.queued { animation: none; } }

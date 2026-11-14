@@ -87,6 +87,31 @@ func TestActivityListsOnlyTheSessionsWork(t *testing.T) {
 	}
 }
 
+// A subagent that ended its turn waiting on a background job (Hermes patch
+// 0092) is listed as "waiting" with the job's command, and the hub passes
+// both on as they are.
+func TestActivityPassesOnAWaitingSubagent(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	e.gw.AddSession(&gatewaytest.Session{ID: sLive, Live: true,
+		Subagents: []gateway.SubagentRow{{SubagentID: subMine, Goal: "Build", Status: ptr("waiting"),
+			WaitingOn: []string{"make -j8 all"}, AcceptingSteer: ptr(false), StartedAt: ptr(1700000000.5)}}})
+	st, err := e.svc.Activity(context.Background(), userAlice, backendPC, sLive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Subagents) != 1 || st.Subagents[0].Status != "waiting" || len(st.Subagents[0].WaitingOn) != 1 || st.Subagents[0].WaitingOn[0] != "make -j8 all" {
+		t.Fatalf("subagents = %+v", st.Subagents)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"waiting_on":["make -j8 all"]`) {
+		t.Fatalf("waiting_on not in the answer: %s", raw)
+	}
+}
+
 func TestActivityRefusesOtherUsers(t *testing.T) {
 	t.Parallel()
 	e := activitySetup(t)
