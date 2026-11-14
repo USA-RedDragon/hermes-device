@@ -1,0 +1,11 @@
+# Upstream tests of the skill paths the patch changes
+tests/tools/test_skill_manager_tool.py
+tests/tools/test_skill_manage_batch.py
+tests/tools/test_skill_manage_schema_diet.py
+tests/tools/test_skill_create_overlap.py
+tests/tools/test_skills_tool.py
+tests/agent/test_project_skills.py
+tests/agent/test_skills_index_format.py
+tests/agent/test_skills_guidance_content_filter.py
+tests/agent/test_memory_skill_scaffolding.py
+tests/tools/test_skill_pending_diff_batch.py

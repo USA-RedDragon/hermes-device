@@ -1,0 +1,935 @@
+From b92d863e5c38a25ba971cd6ba6a5030199365e41 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 21:00:41 -0600
+Subject: [PATCH] feat(skills): project skills and global skills
+
+skill_manage takes a scope ('project' or 'global'). A plugin that knows a chat's project registers a provider (agent.skill_utils.register_project_skills_provider); that project's skills dir is then a project root for the chat and its subagents: listed, loaded and edited only there, marked project, winning over a global skill of the same name, without a trust entry or scan. In a chat with a project a create must name its scope; a global skill that names the project gets a warning. The tool description, SKILLS_GUIDANCE and the memory tool description say where each kind of knowledge goes. Without a provider nothing changes.
+---
+ agent/prompt_builder.py                  |  11 +-
+ agent/skill_utils.py                     | 120 +++++++++++++-
+ agent/system_prompt.py                   |   7 +-
+ tests/tools/test_project_skills_scope.py | 195 +++++++++++++++++++++++
+ tools/memory_tool.py                     |   5 +-
+ tools/skill_manager_batch.py             |  31 +++-
+ tools/skill_manager_guards.py            |   4 +-
+ tools/skill_manager_tool.py              | 172 +++++++++++++++++---
+ tools/skills_tool.py                     |  27 +++-
+ 9 files changed, 529 insertions(+), 43 deletions(-)
+ create mode 100644 tests/tools/test_project_skills_scope.py
+
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 901b35a4..0955a50f 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -213,7 +213,8 @@ def build_memory_guidance(
+         "Skills come first: when you learn something while doing a task — a "
+         "procedure, a pitfall, and the user's preferences and corrections "
+         "for that kind of work — record it in the skill you used or built "
+-        "for the task (skill_manage), where it loads only when relevant. "
++        "for the task (skill_manage), where it loads only when relevant (a skill about one project's codebase "
++        "is a project skill, scope='project'; a global skill must be generic). "
+         if skill_manage_available else
+         "Task-specific knowledge — procedures, pitfalls, and the user's preferences "
+         "and corrections for that kind of work — belongs in skills, not in memory, "
+@@ -258,7 +259,13 @@ SESSION_SEARCH_GUIDANCE = (
+ # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. The
+ # [SKILL_PRUNED] reload rule that followed moved to the compaction summary, the only place markers exist
+ # (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
+-SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
++SKILLS_GUIDANCE = (
++    "When you work out a non-trivial workflow, record it with skill_manage for future reuse. In a chat with a "
++    "project, knowledge about that one codebase (layout, commands, people, conventions) goes in a project skill "
++    "(scope='project'); a global skill is only for a procedure that applies across projects and is written "
++    "generically, with no project names, repo paths, hostnames or usernames. A project-specific lesson found "
++    "while using a global skill goes in a project skill."
++)
+ 
+ KANBAN_GUIDANCE = (
+     "# Kanban task execution protocol\n"
+diff --git a/agent/skill_utils.py b/agent/skill_utils.py
+index 0b1eaf15..329df261 100644
+--- a/agent/skill_utils.py
++++ b/agent/skill_utils.py
+@@ -2,6 +2,8 @@
+ Import-light by design: no tool registry, CLI config, or provider resolution."""
+ 
+ import ast
++import contextlib
++import contextvars
+ import copy
+ import hashlib
+ import logging
+@@ -626,10 +628,122 @@ def _current_project_root(trusted: bool) -> Optional[Path]:
+     return root if root is not None and is_project_root_trusted(root) == trusted else None
+ 
+ 
++# Session project skills: a plugin that knows which project a chat works in (project-memory) registers a
++# provider. Its skills dir, kept in the Hermes home and written only through skill_manage, is a project
++# root for that chat and its subagents, so it needs no trust entry and no quarantine scan.
++_SKILLS_PROVIDER: Optional[tuple[Callable[[str], Optional[str]], Callable[[str], Optional[Path]],
++                                 Optional[Callable[[str], list[str]]]]] = None
++_SESSION_HINT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("project_skills_session", default=None)
++_PROJECT_OVERRIDE: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
++    "project_skills_project", default=None)
++
++
++def register_project_skills_provider(current: Callable[[str], Optional[str]],
++                                     skills_dir: Callable[[str], Optional[Path]],
++                                     terms: Optional[Callable[[str], list[str]]] = None) -> None:
++    """``current(session_id)`` is the slug of the session's project or None; ``skills_dir(slug)`` is that
++    project's skills dir (it need not exist yet); ``terms(slug)`` lists words that name the project (its
++    repository name, folders), which a global skill should not contain. The last registration wins."""
++    global _SKILLS_PROVIDER
++    _SKILLS_PROVIDER = (current, skills_dir, terms)
++
++
++@contextlib.contextmanager
++def project_skills_session(session_id: Optional[str]):
++    """Name the session whose project the skill lookups inside the block use, where the session context
++    variable is not bound yet (the prompt build) or belongs to another turn."""
++    token = _SESSION_HINT.set(session_id or None)
++    try:
++        yield
++    finally:
++        _SESSION_HINT.reset(token)
++
++
++@contextlib.contextmanager
++def project_skills_project(slug: Optional[str]):
++    """Use this project's skills inside the block whatever the session is: the replay of an approved
++    staged skill write, which runs with no chat."""
++    token = _PROJECT_OVERRIDE.set(slug or None)
++    try:
++        yield
++    finally:
++        _PROJECT_OVERRIDE.reset(token)
++
++
++def session_hint() -> Optional[str]:
++    return _SESSION_HINT.get()
++
++
++def _session_id_now() -> str:
++    if (hint := _SESSION_HINT.get()):
++        return hint
++    try:
++        from gateway.session_context import _SESSION_ID, _UNSET
++        value = _SESSION_ID.get()
++    except Exception:
++        return ""
++    return "" if value is _UNSET or not isinstance(value, str) else value
++
++
++def current_project_slug() -> Optional[str]:
++    """The slug of the project the current session works in, or None (no provider, no project, no session)."""
++    if (override := _PROJECT_OVERRIDE.get()):
++        return override
++    if _SKILLS_PROVIDER is None:
++        return None
++    session_id = _session_id_now()
++    if not session_id:
++        return None
++    try:
++        return _SKILLS_PROVIDER[0](session_id) or None
++    except Exception:
++        logger.debug("project skills provider failed", exc_info=True)
++        return None
++
++
++def session_project_skills_dir() -> Optional[Path]:
++    """The current project's skills dir (it may not exist yet), or None outside a project."""
++    if _SKILLS_PROVIDER is None or not (slug := current_project_slug()):
++        return None
++    try:
++        return _SKILLS_PROVIDER[1](slug)
++    except Exception:
++        logger.debug("project skills provider failed", exc_info=True)
++        return None
++
++
++def current_project_terms() -> list[str]:
++    """Words that name the current project, for the check that keeps a global skill generic."""
++    if _SKILLS_PROVIDER is None or _SKILLS_PROVIDER[2] is None or not (slug := current_project_slug()):
++        return []
++    try:
++        return [t for t in _SKILLS_PROVIDER[2](slug) if isinstance(t, str) and t]
++    except Exception:
++        logger.debug("project skills provider failed", exc_info=True)
++        return []
++
++
++def is_session_project_path(path) -> bool:
++    """True when *path* is inside the current project's skills dir."""
++    root = session_project_skills_dir()
++    if root is None:
++        return False
++    try:
++        return Path(path).resolve().is_relative_to(root.resolve())
++    except OSError:
++        return False
++
++
+ def get_project_skills_dirs() -> list[Path]:
+-    """Trusted project-local skill dirs for the current cwd (may be empty)."""
++    """Project skill dirs for the current session: the project's own dir from the registered provider
++    (when it exists), then the trusted project-local dirs of the cwd (may be empty)."""
+     root = _current_project_root(trusted=True)
+-    return _candidate_project_skills_dirs(root) if root is not None else []
++    dirs = _candidate_project_skills_dirs(root) if root is not None else []
++    own = session_project_skills_dir()
++    if own is not None and own.is_dir():
++        own = own.resolve()
++        dirs = [own, *[d for d in dirs if d != own]]
++    return dirs
+ 
+ 
+ def get_untrusted_project_skills_root() -> Optional[tuple[Path, int]]:
+@@ -668,6 +782,8 @@ def is_quarantined_project_skill(skill_md) -> bool:
+     """True when a project skill's scan verdict is ``dangerous``. Fail-closed: a
+     scanner crash or missing scanner quarantines the skill. Scans
+     unconditionally — non-project callers should not call this."""
++    if is_session_project_path(skill_md):
++        return False
+     skill_dir = Path(skill_md).parent
+     try:
+         key = str(skill_dir.resolve())
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index 45f99d30..60b6c1a7 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -317,8 +317,11 @@ def _skills_prompt(agent: Any) -> str:
+         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
+     except Exception:
+         _compact_cats = frozenset()
+-    return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
+-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
++    from agent.skill_utils import project_skills_session
++    with project_skills_session(getattr(agent, "session_id", None)):
++        return _pb.build_skills_system_prompt(
++            available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
++            compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+ 
+ 
+ def _auto_load_parts(agent: Any) -> list[str]:
+diff --git a/tests/tools/test_project_skills_scope.py b/tests/tools/test_project_skills_scope.py
+new file mode 100644
+index 00000000..9656d54f
+--- /dev/null
++++ b/tests/tools/test_project_skills_scope.py
+@@ -0,0 +1,195 @@
++"""Project skills and global skills: placement, visibility per project, name clashes, subagents."""
++
++import json
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++
++from agent import skill_utils
++from tools import skills_tool
++from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA, skill_manage
++
++SESSIONS = {"chat-a": "proj-a", "child-a": "proj-a", "chat-b": "proj-b"}
++
++
++def _content(name, description="Use when testing.", body="Step 1: do it."):
++    return f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\n{body}\n"
++
++
++@pytest.fixture
++def env(tmp_path):
++    glob, projects = tmp_path / "skills", tmp_path / "projects"
++    glob.mkdir()
++    skill_utils.register_project_skills_provider(
++        SESSIONS.get, lambda slug: projects / slug / "skills",
++        lambda slug: {"proj-a": ["demo-app"], "proj-b": ["other"]}.get(slug, []))
++    with patch("tools.skill_manager_tool.SKILLS_DIR", glob), patch("tools.skills_tool.SKILLS_DIR", glob), \
++         patch("agent.skill_utils.get_all_skills_dirs", return_value=[glob]), \
++         patch("agent.skill_utils.get_skills_dir", return_value=glob), \
++         patch("tools.skill_overlap.configured_threshold", return_value=0.0):
++        yield glob, projects
++    skill_utils._SKILLS_PROVIDER = None
++
++
++def _manage(session, *ops):
++    return json.loads(skill_manage(action="", name="", operations=list(ops), session_id=session))
++
++
++def _create(session, name, scope=None, **kw):
++    op = {"action": "create", "name": name, "content": _content(name, **kw)}
++    if scope:
++        op["scope"] = scope
++    return _manage(session, op)
++
++
++def _names(session):
++    with skill_utils.project_skills_session(session):
++        found = json.loads(skills_tool.skills_list(task_id=None))
++    return {s["name"]: s.get("scope", "global") for s in found.get("skills", [])}
++
++
++def _view(session, name):
++    with skill_utils.project_skills_session(session):
++        return json.loads(skills_tool.skill_view(name))
++
++
++class TestPlacement:
++    def test_project_scope_lands_in_the_project_dir(self, env):
++        glob, projects = env
++        res = _create("chat-a", "demo-layout", "project")
++        assert res["success"], res
++        assert (projects / "proj-a" / "skills" / "demo-layout" / "SKILL.md").is_file()
++        assert not (glob / "demo-layout").exists()
++
++    def test_global_scope_lands_in_the_global_dir(self, env):
++        glob, projects = env
++        assert _create("chat-a", "flux-steps", "global")["success"]
++        assert (glob / "flux-steps" / "SKILL.md").is_file()
++        assert not (projects / "proj-a").exists()
++
++    def test_in_a_project_scope_is_required_on_create(self, env):
++        res = _create("chat-a", "demo-layout")
++        assert res["success"] is False and "scope" in res["error"]
++
++    def test_no_project_means_global_and_project_scope_is_refused(self, env):
++        glob, _ = env
++        assert _create("unbound", "plain-skill")["success"]
++        assert (glob / "plain-skill" / "SKILL.md").is_file()
++        res = _create("unbound", "x-skill", "project")
++        assert res["success"] is False and "no project" in res["error"].lower()
++
++    def test_bad_scope_value_is_refused(self, env):
++        assert _create("chat-a", "demo-layout", "team")["success"] is False
++
++    def test_global_skill_naming_the_project_gets_a_warning(self, env):
++        res = _manage("chat-a", {"action": "create", "name": "deploy-it", "scope": "global",
++                                 "content": _content("deploy-it", body="Run it in the demo-app repo.")})
++        assert res["success"]
++        assert "demo-app" in res["results"][0]["scope_warning"]
++
++    def test_project_skill_naming_the_project_is_fine(self, env):
++        res = _manage("chat-a", {"action": "create", "name": "deploy-it", "scope": "project",
++                                 "content": _content("deploy-it", body="Run it in the demo-app repo.")})
++        assert res["success"] and "scope_warning" not in res["results"][0]
++
++    def test_schema_documents_scope_and_placement_rule(self):
++        desc = SKILL_MANAGE_SCHEMA["description"]
++        assert "scope='project'" in desc and "generic" in desc
++        branches = SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]["anyOf"]
++        assert all("scope" in b["properties"] for b in branches)
++
++    def test_guidance_mentions_project_skills(self):
++        from agent.prompt_builder import SKILLS_GUIDANCE
++        from tools.memory_tool import MEMORY_SCHEMA
++        assert "project skill" in SKILLS_GUIDANCE and "generically" in SKILLS_GUIDANCE
++        assert "project skill" in MEMORY_SCHEMA["description"]
++
++    def test_edits_follow_the_skill_into_the_project_dir(self, env):
++        _, projects = env
++        _create("chat-a", "demo-layout", "project")
++        res = _manage("chat-a", {"action": "patch", "name": "demo-layout", "old_string": "do it",
++                                 "new_string": "do it well"})
++        assert res["success"] and res["results"][0]["scope"] == "project"
++        assert "do it well" in (projects / "proj-a" / "skills" / "demo-layout" / "SKILL.md").read_text()
++
++
++class TestVisibility:
++    def test_project_skill_is_listed_only_in_its_project(self, env):
++        _create("chat-a", "demo-layout", "project")
++        _create("chat-a", "generic-steps", "global")
++        assert _names("chat-a") == {"demo-layout": "project", "generic-steps": "global"}
++        assert _names("chat-b") == {"generic-steps": "global"}
++        assert _names("unbound") == {"generic-steps": "global"}
++
++    def test_project_skill_cannot_be_viewed_elsewhere(self, env):
++        _create("chat-a", "demo-layout", "project")
++        assert _view("chat-a", "demo-layout")["success"] is True
++        assert _view("chat-a", "demo-layout")["scope"] == "project"
++        assert _view("chat-b", "demo-layout")["success"] is False
++        assert _view("unbound", "demo-layout")["success"] is False
++
++    def test_global_skill_view_is_not_marked(self, env):
++        _create("chat-a", "generic-steps", "global")
++        assert "scope" not in _view("chat-a", "generic-steps")
++
++    def test_prompt_index_marks_project_skills_per_project(self, env):
++        from agent import prompt_builder as pb
++        _create("chat-a", "demo-layout", "project", description="Use when touching the demo layout.")
++        _create("chat-a", "generic-steps", "global")
++        with skill_utils.project_skills_session("chat-a"):
++            a = pb.build_skills_system_prompt(skills_dir_override=env[0])
++        with skill_utils.project_skills_session("chat-b"):
++            b = pb.build_skills_system_prompt(skills_dir_override=env[0])
++        assert "demo-layout: [project]" in a and "generic-steps" in a
++        assert "demo-layout" not in b and "generic-steps" in b
++
++    def test_project_skill_is_not_quarantined_or_trusted_by_path(self, env):
++        _, projects = env
++        _create("chat-a", "demo-layout", "project")
++        smd = projects / "proj-a" / "skills" / "demo-layout" / "SKILL.md"
++        with skill_utils.project_skills_session("chat-a"):
++            assert skill_utils.is_quarantined_project_skill(smd) is False
++
++
++class TestClash:
++    def test_project_skill_wins_in_its_project_only(self, env):
++        _create("chat-a", "shared-name", "global", description="Global one.")
++        _create("chat-a", "shared-name", "project", description="Project one.")
++        assert _view("chat-a", "shared-name")["description"] == "Project one."
++        assert _view("chat-b", "shared-name")["description"] == "Global one."
++        listing = _names("chat-a")
++        assert listing["shared-name"] == "project"
++
++    def test_edit_prefers_the_project_copy_and_scope_reaches_the_global_one(self, env):
++        glob, projects = env
++        _create("chat-a", "shared-name", "global")
++        _create("chat-a", "shared-name", "project")
++        _manage("chat-a", {"action": "patch", "name": "shared-name", "old_string": "do it", "new_string": "P"})
++        _manage("chat-a", {"action": "patch", "name": "shared-name", "scope": "global", "old_string": "do it",
++                           "new_string": "G"})
++        assert "P" in (projects / "proj-a" / "skills" / "shared-name" / "SKILL.md").read_text()
++        assert "G" in (glob / "shared-name" / "SKILL.md").read_text()
++
++    def test_create_clash_is_per_scope(self, env):
++        assert _create("chat-a", "shared-name", "global")["success"]
++        assert _create("chat-a", "shared-name", "project")["success"]
++        assert _create("chat-a", "shared-name", "project")["success"] is False
++
++
++class TestSubagents:
++    def test_subagent_sees_its_parents_project_skills(self, env):
++        _create("chat-a", "demo-layout", "project")
++        assert _names("child-a")["demo-layout"] == "project"
++        assert _view("child-a", "demo-layout")["success"] is True
++
++    def test_subagent_of_another_project_does_not(self, env):
++        _create("chat-a", "demo-layout", "project")
++        assert "demo-layout" not in _names("chat-b")
++
++    def test_tool_handlers_resolve_the_project_from_the_call_session(self, env):
++        _create("chat-a", "demo-layout", "project")
++        listed = json.loads(skills_tool._in_session("child-a", skills_tool.skills_list, task_id=None))
++        assert "demo-layout" in {s["name"] for s in listed["skills"]}
++        listed = json.loads(skills_tool._in_session("chat-b", skills_tool.skills_list, task_id=None))
++        assert "demo-layout" not in {s["name"] for s in listed["skills"]}
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index abf8342f..5a9381be 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -384,8 +384,9 @@ MEMORY_SCHEMA = {
+         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
+         "is, stable environment facts, standing conventions with no task home. Anything "
+         "learned while doing a task (procedures, pitfalls, and the user's preferences and "
+-        "corrections for that kind of work) belongs in the task's skill via skill_manage, "
+-        "where it loads only when relevant; memory is injected into every turn and must "
++        "corrections for that kind of work) belongs in the task's skill via skill_manage "
++        "(a skill about one project's codebase is a project skill, scope='project'; a global skill must be "
++        "generic), where it loads only when relevant; memory is injected into every turn and must "
+         "stay small.\n\n"
+         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
+         "removes or shortens enough stale entries and adds the new one together.\n\n"
+diff --git a/tools/skill_manager_batch.py b/tools/skill_manager_batch.py
+index 78b72dde..78f6f177 100644
+--- a/tools/skill_manager_batch.py
++++ b/tools/skill_manager_batch.py
+@@ -86,7 +86,7 @@ def _op_shape_error(action: str, args: dict):
+ def _validate_batch_ops(operations, default_name, tool_error):
+     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
+     from tools.skill_manager_guards import _background_review_preflight
+-    from tools.skill_manager_tool import _validate_category
++    from tools.skill_manager_tool import _create_scope, _validate_category, _validate_scope
+     def fail(i, msg):
+         return None, tool_error(f"operations[{i}]{msg}", success=False)
+     names = []
+@@ -108,6 +108,9 @@ def _validate_batch_ops(operations, default_name, tool_error):
+         # so it returns a JSON error (not a TypeError) and never leaks the snapshot tempdir.
+         if act == "create" and (cat_err := _validate_category(op.get("category"))) is not None:
+             return fail(i, f" ({act} on '{nm}'): {cat_err}")
++        scope_err = _validate_scope(op.get("scope")) or (act == "create" and _create_scope(op.get("scope"))[1])
++        if scope_err:
++            return fail(i, f" ({act} on '{nm}'): {scope_err}")
+         names.append(nm)
+         if act == "create" and nm in names[:-1]:
+             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
+@@ -237,7 +240,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
+         if not nm:
+             return tool_error("operations[0] (delete) needs a 'name'.", success=False)
+         return _smt.skill_manage(action="delete", name=nm, task_id=task_id, session_id=session_id,
+-                                 absorbed_into=operations[0].get("absorbed_into"))
++                                 absorbed_into=operations[0].get("absorbed_into"), scope=operations[0].get("scope"))
+     names, err = _validate_batch_ops(operations, default_name, tool_error)
+     if err is not None:
+         return err
+@@ -246,7 +249,9 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
+         def _staging(wa):
+             acts = ", ".join(op["action"] for op in operations)
+             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
+-            return {"action": "batch", "operations": operations}, gist
++            from agent.skill_utils import current_project_slug
++            return {"action": "batch", "operations": operations,
++                    **({"project": slug} if (slug := current_project_slug()) else {})}, gist
+         staged = _smt._run_write_gate(_staging)
+         if staged is not None:
+             return staged
+@@ -255,9 +260,16 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
+     # between the snapshot and a rollback would be silently reverted.
+     with _smt._skill_mutation_locks(names):
+         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
+-        create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
++        # The scope each skill of the batch lives in, from its first op, so a project skill and a global one
++        # that share a name are never mixed up by the snapshot, the later ops or the rollback.
++        scope_of: dict = {}
++        for i, op in enumerate(operations):
++            scope_of.setdefault(names[i], _smt._create_scope(op.get("scope"))[0] if op.get("action") == "create"
++                                else op.get("scope"))
++        find_skill = lambda nm: _smt._find_skill(nm, scope=scope_of.get(nm))  # noqa: E731
++        create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"), scope_of[names[i]])
+                           for i, op in enumerate(operations) if op.get("action") == "create"}
+-        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill, create_targets)
++        snapshots, snap_err = _snapshot_skills(names, snap_root, find_skill, create_targets)
+         if snap_err is not None:
+             shutil.rmtree(snap_root, ignore_errors=True)
+             return tool_error(snap_err, success=False)
+@@ -267,14 +279,15 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
+         token = _smt._skill_gate_bypass.set(True)
+         try:
+             for i, op in enumerate(operations):
+-                raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
+-                                              task_id=task_id, session_id=session_id)
++                raw = _smt._skill_manage_from(
++                    {**op, "name": names[i], "operations": None, "scope": op.get("scope") or scope_of[names[i]]},
++                    task_id=task_id, session_id=session_id)
+                 try:
+                     parsed = json.loads(raw)
+                 except Exception:
+                     parsed = {"success": False, "error": "unparseable op result"}
+                 if not parsed.get("success"):
+-                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
++                    note, rollback_failed = _rollback(snapshots, find_skill, results)
+                     fail = {  # key order is wire-visible
+                         "success": False,
+                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
+@@ -288,6 +301,8 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
+                     return json.dumps(fail, ensure_ascii=False)
+                 entry = {"name": names[i], "action": op["action"],
+                          "file_path": op.get("file_path"), "success": True}
++                if parsed.get("scope"):
++                    entry.update({k: parsed[k] for k in ("scope", "project", "scope_warning") if parsed.get(k)})
+                 # Advisory payloads (linter findings, org-sharing note) ride on the op result; the
+                 # compact success row otherwise hides them and the model never sees a finding.
+                 entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
+diff --git a/tools/skill_manager_guards.py b/tools/skill_manager_guards.py
+index 896189fb..989ee773 100644
+--- a/tools/skill_manager_guards.py
++++ b/tools/skill_manager_guards.py
+@@ -75,13 +75,13 @@ def _reset_background_review_read_marks() -> None:
+ 
+ def _resolved_roots(skill_path: Path):
+     """``(resolved skill_path, [(root, resolved_root), ...])`` over every resolvable skills root."""
+-    from agent.skill_utils import get_all_skills_dirs
++    from agent.skill_utils import get_all_skills_dirs, session_project_skills_dir
+     try:
+         resolved = skill_path.resolve()
+     except OSError:
+         resolved = skill_path
+     roots = []
+-    for root in get_all_skills_dirs():
++    for root in [*([own] if (own := session_project_skills_dir()) is not None else []), *get_all_skills_dirs()]:
+         with suppress(OSError):
+             roots.append((root, root.resolve()))
+     return resolved, roots
+diff --git a/tools/skill_manager_tool.py b/tools/skill_manager_tool.py
+index 3f05e53f..3e1d2c7e 100644
+--- a/tools/skill_manager_tool.py
++++ b/tools/skill_manager_tool.py
+@@ -209,8 +209,76 @@ def _description_preview(content: str) -> str:
+     return ""
+ 
+ 
+-def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
+-    """New-skill dir; honors ``skills.create_dir`` (e.g. a shared fleet dir)."""
++SCOPES = ("project", "global")
++_lookup_scope: _ctxvars.ContextVar[Optional[str]] = _ctxvars.ContextVar("skill_lookup_scope", default=None)
++_NO_PROJECT = ("This chat has no project to keep a project skill for (a project is the git repository of the "
++               "folder the chat is bound to with /device <device> <dir>). Use scope='global' for a skill "
++               "that applies across projects.")
++_PLACEMENT = ("Say where this skill belongs with scope on the op. scope='project': knowledge about this one "
++              "codebase, its layout, commands, people or conventions, and a project-specific lesson found "
++              "while using a global skill. scope='global': only a procedure that applies across projects, "
++              "written generically (no project names, repo paths, hostnames or usernames, none of one "
++              "project's quirks).")
++
++
++def _validate_scope(scope: Optional[str]) -> Optional[str]:
++    if scope is None or scope in SCOPES:
++        return None
++    return f"Invalid scope '{scope}'. Use 'project' or 'global'."
++
++
++def _project_skills_dir() -> Optional[Path]:
++    """The current chat's project skills dir (it may not exist yet), or None outside a project."""
++    from agent.skill_utils import session_project_skills_dir
++    return session_project_skills_dir()
++
++
++def _in_project_dir(path: Path, project_dir: Optional[Path]) -> bool:
++    if project_dir is None:
++        return False
++    with suppress(OSError):
++        return Path(path).resolve().is_relative_to(project_dir.resolve())
++    return False
++
++
++def _create_scope(scope: Optional[str]) -> tuple[Optional[str], Optional[str]]:
++    """``(scope, error)`` of a create: with a project in the chat the agent must choose; without one
++    the skill is global and 'project' is refused."""
++    has_project = _project_skills_dir() is not None
++    if scope is None:
++        return ("global", None) if not has_project else (None, _PLACEMENT)
++    if scope == "project" and not has_project:
++        return None, _NO_PROJECT
++    return scope, None
++
++
++def _scope_result(result: dict[str, Any], skill_dir: Path, text: str = "") -> dict[str, Any]:
++    """In a chat with a project, say which scope the skill is in, and warn when a global skill's new text
++    names the project (so it can be generalized, or moved with scope='project')."""
++    project_dir = _project_skills_dir()
++    if project_dir is None:
++        return result
++    from agent.skill_utils import current_project_slug, current_project_terms
++    if _in_project_dir(skill_dir, project_dir):
++        result.update(scope="project", project=current_project_slug())
++        return result
++    result["scope"] = "global"
++    low = text.lower()
++    named = sorted({t for t in current_project_terms() if len(t) >= 3 and t.lower() in low})[:5]
++    if named:
++        result["scope_warning"] = (
++            f"This global skill now mentions the current project ({', '.join(named)}). A global skill must "
++            "work for any project: remove project names, repo paths, hostnames and usernames, or move the "
++            "project-specific part into a project skill (scope='project') and keep only the generic "
++            "procedure here.")
++    return result
++
++
++def _resolve_skill_dir(name: str, category: str | None = None, scope: str | None = None) -> Path:
++    """New-skill dir; honors ``skills.create_dir`` (e.g. a shared fleet dir). ``scope`` 'project' is the
++    current project's skills dir."""
++    if scope == "project" and (project_dir := _project_skills_dir()) is not None:
++        return project_dir / (category or "") / name
+     base = _skills_dir()
+     try:
+         from agent.skill_utils import get_skill_create_dir
+@@ -249,7 +317,7 @@ def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
+     return None
+ 
+ 
+-def _find_skill(name: str) -> Optional[dict[str, Any]]:
++def _find_skill(name: str, scope: Optional[str] = None) -> Optional[dict[str, Any]]:
+     """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
+ 
+     Accepts the bare dir name (``axolotl``; matches category-nested skills too) and the
+@@ -266,6 +334,19 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
+     nothing: like skill_view's same-tier collision refusal, refusing to guess beats
+     silently mutating the wrong skill; the directory name still resolves."""
+     from agent.skill_utils import get_all_skills_dirs
++    scope = scope or _lookup_scope.get()
++    project_dir = _project_skills_dir()
++    if project_dir is not None and scope != "global":
++        # The project's own skill wins over a global one of the same name, as skill_view resolves them.
++        found = _find_skill_in((project_dir,), name)
++        if found is not None or scope == "project":
++            return found
++    if scope == "project":
++        return None
++    return _find_skill_in(get_all_skills_dirs(), name)
++
++
++def _find_skill_in(roots, name: str) -> Optional[dict[str, Any]]:
+     local_root = None
+     if "/" in name or "\\" in name:
+         try:
+@@ -277,7 +358,7 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
+             local_root = _skills_dir()
+     display_matches: list[Path] = []
+     seen_display: set = set()
+-    for skills_dir in get_all_skills_dirs():
++    for skills_dir in roots:
+         if not skills_dir.exists():
+             continue
+         for skill_dir in _iter_skill_dirs(skills_dir):
+@@ -466,16 +547,19 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
+ # --- Core actions -------------------------------------------------------------
+ 
+ def _create_skill(name: str, content: str, category: str | None = None,
+-                  why_new: str | None = None) -> dict[str, Any]:
+-    if err := (_validate_name(name) or _validate_category(category)
++                  why_new: str | None = None, scope: str | None = None) -> dict[str, Any]:
++    if err := (_validate_name(name) or _validate_category(category) or _validate_scope(scope)
+                or _validate_frontmatter(content) or _validate_content_size(content)):
+         return _err(err)
+-    if existing := _find_skill(name):
++    target_scope, scope_err = _create_scope(scope)
++    if scope_err:
++        return _err(scope_err)
++    if existing := _find_skill(name, scope=target_scope):
+         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+     from tools.skill_overlap import check_create
+     if overlap := check_create(name, content, why_new):  # skills.create_overlap_threshold
+         return overlap
+-    skill_dir = _resolve_skill_dir(name, category)
++    skill_dir = _resolve_skill_dir(name, category, target_scope)
+     from hermes_constants import mkdir_under_hermes_home
+     mkdir_under_hermes_home(skill_dir.parent)
+     try:
+@@ -507,7 +591,7 @@ def _create_skill(name: str, content: str, category: str | None = None,
+                 f"skill_manage(action='write_file', name='{name}', file_path='references/example.md', "
+                 "file_content='...')"}
+     _attach_lint_findings(_add_description_prompt_preview(result, content), skill_md)
+-    return result
++    return _scope_result(result, skill_dir, f"{name}\n{content}")
+ 
+ 
+ def _edit_skill(name: str, content: str) -> dict[str, Any]:
+@@ -521,7 +605,7 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
+     result = {
+         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
+         "path": str(skill_dir), "_change": {"description": _description_preview(content)}}
+-    return _add_description_prompt_preview(result, content)
++    return _scope_result(_add_description_prompt_preview(result, content), skill_dir, content)
+ 
+ 
+ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | None = None,
+@@ -575,7 +659,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
+     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
+     if not file_path:
+         _attach_lint_findings(result, target, before=content)
+-    return result
++    return _scope_result(result, skill_dir, new_string)
+ 
+ 
+ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, Any]:
+@@ -612,7 +696,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
+                 "_archived": True}
+     shutil.rmtree(skill_dir)
+     _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
+-    return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
++    return _scope_result({"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}, skill_dir)
+ 
+ 
+ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
+@@ -642,7 +726,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
+     # that crosses the line so the review fork sees it in the same turn.
+     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
+         _attach_lint_findings(result, skill_dir / "SKILL.md")
+-    return result
++    return _scope_result(result, skill_dir, file_content)
+ 
+ 
+ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
+@@ -663,7 +747,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
+         return read_guard
+     target.unlink()
+     _rmdir_if_empty(target.parent, skill_dir)
+-    return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
++    return _scope_result({"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}, skill_dir)
+ 
+ 
+ # --- Main entry point ---------------------------------------------------------
+@@ -697,8 +781,10 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
+     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
+         return None
+     def _staging(wa):
++        from agent.skill_utils import current_project_slug
+         payload = {"action": action, "name": name,
+-                   **{k: v for k, v in payload_kwargs.items() if v is not None}}
++                   **{k: v for k, v in payload_kwargs.items() if v is not None},
++                   **({"project": slug} if (slug := current_project_slug()) else {})}
+         gist_kw = {k: payload_kwargs.get(k) or ""
+                    for k in ("content", "file_path", "old_string", "new_string")}
+         return payload, wa.skill_gist(action, name, **gist_kw)
+@@ -706,7 +792,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
+ 
+ 
+ _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
+-                 "absorbed_into", "operations", "why_new")
++                 "absorbed_into", "operations", "why_new", "scope", "project")
+ 
+ 
+ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
+@@ -739,7 +825,7 @@ def _act_patch(a):
+ # action -> handler(args dict) returning a result dict, or a tool_error JSON string for
+ # argument-shape errors. "edit" is a legacy alias for a full rewrite (not in the schema).
+ _ACTION_HANDLERS = {
+-    "create": lambda a: _create_skill(a["name"], a["content"], a["category"], a.get("why_new")),
++    "create": lambda a: _create_skill(a["name"], a["content"], a["category"], a.get("why_new"), a.get("scope")),
+     "edit": lambda a: _edit_skill(a["name"], a["content"]),
+     "patch": _act_patch,
+     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
+@@ -788,9 +874,26 @@ def skill_manage(
+     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
+     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
+     replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
+-    session_id: str | None = None, operations=None, why_new: str | None = None) -> str:
++    session_id: str | None = None, operations=None, why_new: str | None = None,
++    scope: str | None = None, project: str | None = None) -> str:
+     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
+-    see _skill_manage_batch) overrides the flat fields."""
++    see _skill_manage_batch) overrides the flat fields. ``scope`` ('project' or 'global') picks where a
++    create goes, and which copy another action edits when a project and a global skill share a name;
++    ``project`` (a staged write's replay) names the project whose skills it uses when no chat does."""
++    from agent.skill_utils import (
++        current_project_slug, project_skills_project, project_skills_session, session_hint)
++    if project and current_project_slug() != project:
++        with project_skills_project(project):
++            return skill_manage(
++                action, name, content, category, file_path, file_content, old_string, new_string, replace_all,
++                absorbed_into, task_id, session_id, operations, why_new, scope)
++    if session_id and session_hint() != session_id:
++        with project_skills_session(session_id):
++            return skill_manage(
++                action, name, content, category, file_path, file_content, old_string, new_string, replace_all,
++                absorbed_into, task_id, session_id, operations, why_new, scope)
++    if (scope_err := _validate_scope(scope)) is not None:
++        return tool_error(scope_err, success=False)
+     if operations is not None:
+         return _skill_manage_batch(
+             operations, default_name=name or None, task_id=task_id, session_id=session_id)
+@@ -800,7 +903,7 @@ def skill_manage(
+     # of origin; bypassed when replaying an approved staged write.
+     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
+                 old_string=old_string, new_string=new_string, replace_all=replace_all,
+-                absorbed_into=absorbed_into, why_new=why_new)
++                absorbed_into=absorbed_into, why_new=why_new, scope=scope)
+     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
+         return gate_result
+     if (shape_err := _op_shape_error(action, args)) is not None:
+@@ -812,6 +915,14 @@ def skill_manage(
+     # A mutation is read-modify-write even when its action eventually delegates
+     # to a helper: guards, ledger capture, patch matching, validation, rollback,
+     # and the atomic replacement all belong to the same ownership window.
++    lookup_token = _lookup_scope.set(scope)
++    try:
++        return _skill_manage_locked(action, name, args, file_path, absorbed_into, task_id, session_id)
++    finally:
++        _lookup_scope.reset(lookup_token)
++
++
++def _skill_manage_locked(action, name, args, file_path, absorbed_into, task_id, session_id) -> str:
+     with _skill_mutation_lock(name):
+         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
+         # destroys the whole package (consolidation may have re-homed support files first), so
+@@ -855,7 +966,14 @@ def _skill_manage_description() -> str:
+         "rule per lesson, references/ named by topic. Extend an existing skill "
+         "when one covers the topic; create only for a new topic (a create that overlaps an "
+         "installed skill is refused with the matches unless it carries why_new, one short "
+-        "sentence on why none of them fits). skill_view() shows format conventions."
++        "sentence on why none of them fits). skill_view() shows format conventions.\n\n"
++        "WHERE: in a chat with a project (a git repository on a bound device folder) every create names a scope. "
++        "scope='project': knowledge about that one codebase (its layout, commands, people or conventions) and any "
++        "project-specific lesson you find while using a global skill; it loads only in that project's chats and "
++        "their subagents, and wins over a global skill of the same name there. scope='global': only a procedure "
++        "that applies across projects, written for generic use: no project names, repo paths, hostnames, "
++        "usernames or one project's quirks (put those in a project skill). Other ops act on the project skill "
++        "first; add scope to reach the global one of the same name. Without a project, every skill is global."
+     )
+ 
+ 
+@@ -872,11 +990,21 @@ _FILE_PATH = {
+ }  # stated once (write_file); patch/remove_file point at it
+ 
+ 
++_SCOPE_CREATE = {"type": "string", "enum": list(SCOPES),
++                 "description": "Where the new skill lives: 'project' for this codebase's own knowledge, 'global' "
++                                "for a generic procedure that applies across projects. Required in a chat with a "
++                                "project."}
++_SCOPE_OTHER = {"type": "string", "enum": list(SCOPES),
++                "description": "Only when a project skill and a global skill share the name: which one to act on "
++                               "(default: the project's)."}
++
++
+ def _op_schema(action: str, props: dict, required: tuple) -> dict:
+     """One self-contained per-action op shape. ``additionalProperties: false`` is what lets a
+     grammar-constrained backend refuse another action's text slot outright."""
+     return {"type": "object", "additionalProperties": False,
+-            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]}, **props},
++            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]},
++                           "scope": _SCOPE_CREATE if action == "create" else _SCOPE_OTHER, **props},
+             "required": ["name", "action", *required]}
+ 
+ 
+diff --git a/tools/skills_tool.py b/tools/skills_tool.py
+index 152c1741..5188dcfe 100644
+--- a/tools/skills_tool.py
++++ b/tools/skills_tool.py
+@@ -174,8 +174,10 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
+     (respects test monkeypatching), then skills.external_dirs."""
+     dirs_to_check = [_skills_dir()]
+     with suppress(Exception):
+-        from agent.skill_utils import get_external_skills_dirs
++        from agent.skill_utils import get_external_skills_dirs, session_project_skills_dir
+         dirs_to_check.extend(get_external_skills_dirs())
++        if (own := session_project_skills_dir()) is not None:
++            dirs_to_check.append(own)
+     for skills_dir in dirs_to_check:
+         with suppress(ValueError):
+             if len(parts := skill_path.relative_to(skills_dir).parts) >= 3:
+@@ -278,7 +280,9 @@ def find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
+     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
+     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
+-    return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
++    from agent.skill_utils import TIER_PROJECT
++    return [{"name": s["load_name"], "description": s["description"], "category": s["category"],
++             **({"scope": "project"} if s["tier"] == TIER_PROJECT else {})}
+             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
+ 
+ 
+@@ -695,6 +699,7 @@ def skill_view(
+                     + "` and reload."
+                 )
+ 
++        from agent.skill_utils import TIER_PROJECT, current_project_slug, is_session_project_path
+         result = {
+             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
+             "tags": tags, "related_skills": related_skills, "content": rendered_content,
+@@ -705,6 +710,10 @@ def skill_view(
+             **readiness_extras}
+         if deps_note:
+             result["deps_note"] = deps_note
++        if {d: t for t, d in roots}.get(_owning_search_dir(skill_md, all_dirs)) == TIER_PROJECT:
++            result["scope"] = "project"
++            if is_session_project_path(skill_md):
++                result["project"] = current_project_slug()
+         _mark_background_review_read(skill_md)
+         if frontmatter.get("compatibility"):  # agentskills.io optional fields
+             result["compatibility"] = frontmatter["compatibility"]
+@@ -751,11 +760,23 @@ SKILL_VIEW_SCHEMA = {
+ 
+ registry.register(
+     name="skills_list", toolset="skills", schema=SKILLS_LIST_SCHEMA,
+-    handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id")),
++    handler=lambda args, **kw: _in_session(kw.get("session_id"), skills_list, category=args.get("category"),
++                                           task_id=kw.get("task_id")),
+     check_fn=check_skills_requirements, emoji="📚")
+ 
+ 
++def _in_session(_sid, fn, *a, **k):
++    """Run a skill lookup for the session's project skills (the tool call may not carry the session context)."""
++    from agent.skill_utils import project_skills_session
++    with project_skills_session(_sid):
++        return fn(*a, **k)
++
++
+ def _skill_view_with_bump(args, **kw):
++    return _in_session(kw.get("session_id"), _skill_view_with_bump_inner, args, **kw)
++
++
++def _skill_view_with_bump_inner(args, **kw):
+     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
+     mirrors read_file's unchanged-stub: a result byte-identical to one already served for the
+     same skill file in this session returns a short stub (cache cleared on context compression)."""
+-- 
+2.56.0
+
