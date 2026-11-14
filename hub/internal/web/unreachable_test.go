@@ -28,7 +28,14 @@ func TestSessionsWhenHermesIsUnreachable(t *testing.T) {
 		t.Fatalf("sessions = %d %s", resp.StatusCode, body)
 	}
 	e.gw.Stop()
-	resp, body = get(t, c, e.url+"/api/sessions")
+	// Until the hub sees its connection to Hermes close (a few ms), it
+	// answers from its last list as before.
+	for end := time.Now().Add(time.Second); ; time.Sleep(10 * time.Millisecond) {
+		resp, body = get(t, c, e.url+"/api/sessions")
+		if resp.Header.Get(web.RefreshingHeader) != "" || resp.Header.Get(web.UnreachableHeader) != "" || time.Now().After(end) {
+			break
+		}
+	}
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "First") || resp.Header.Get(web.RefreshingHeader) != "pc" ||
 		resp.Header.Get(web.UnreachableHeader) != "" {
 		t.Fatalf("sessions just after Hermes went down = %d %q %q %s; want the last list, refreshing", resp.StatusCode,
