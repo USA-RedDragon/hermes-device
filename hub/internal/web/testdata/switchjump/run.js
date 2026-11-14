@@ -127,7 +127,8 @@ const { proc, connect } = driver();
     const onScroll = () => snap("scroll");
     log.addEventListener("scroll", onScroll, { passive: true });
     window.__unrec = () => log.removeEventListener("scroll", onScroll);
-    const step = () => { snap("frame"); if (!window.__stop) requestAnimationFrame(step); else window.__unrec(); };
+    // A frame is read after it is drawn (the timer runs once the frame is done): the page puts a streamed write at the end within that frame, before it is painted, and this callback runs ahead of the page's own.
+    const step = () => { setTimeout(() => { snap("frame"); if (!window.__stop) requestAnimationFrame(step); else window.__unrec(); }, 0); };
     requestAnimationFrame(step); }; return 1; })()`);
   await install();
   const linkBox = (id) => ev(`(() => { const a = document.querySelector('#sessions a.go[href="#/s/pc/${id}"]'); if (!a) return null; a.scrollIntoView({ block: "nearest" }); const r = a.getBoundingClientRect(); return { x: r.x + Math.min(40, r.width / 2), y: r.y + r.height / 2 }; })()`);
@@ -219,7 +220,9 @@ const { proc, connect } = driver();
     // A frame between a change and the scroll that answers it can be off;
     // the view is wrong when it stays off.
     const last = mine[mine.length - 1];
-    if (last.gap > 24 || bad.length > 1) {
+    // The last frame read can be one a write came into after its draw: the page puts it at the end in the next frame, before that is painted. The view is off when the last two frames are.
+    const prev = mine[mine.length - 2] || last;
+    if ((last.gap > 24 && prev.gap > 24) || bad.length > 1) {
       fails.push({ i, to, how, last, firstBad: bad[0], kinds, flips, around: mine.slice(Math.max(first, mine.indexOf(bad[0]) - 6), mine.indexOf(bad[0]) + 10) });
       console.log(`switch ${i} to ${to} (${how}${coast ? ", coasting" : ""}): ${bad.length} frames off the end, last gap ${last.gap}`);
     }

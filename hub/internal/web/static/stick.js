@@ -60,7 +60,7 @@ window.HubStick = (log, o) => {
   };
   // layoutMoved says a scroll that the reader did not announce came from the
   // layout: the log changed height, shrank, or did so just before.
-  const layoutMoved = () => log.clientHeight !== rec.c || log.scrollHeight < rec.h || now() - resized < settle;
+  const layoutMoved = (r = rec) => log.clientHeight !== r.c || log.scrollHeight < r.h || now() - resized < settle;
   const take = () => { anchor = pinned ? null : o.probe(log); };
   const set = (top) => { log.scrollTop = top; note(); };
 
@@ -68,6 +68,7 @@ window.HubStick = (log, o) => {
   // content, and for a log that was not shown: it puts the log back where
   // the reader is.
   function sync() {
+    flushScroll();
     if (log.hidden) { changed(); return; }
     if (pinned) {
       if (gap() >= 1) set(log.scrollHeight);
@@ -86,14 +87,17 @@ window.HubStick = (log, o) => {
   }
 
   // scrolled is for each scroll event of the log.
-  function scrolled() {
+  // from is the record the log had when the scroll event came, for a call a
+  // frame later: the page may have noted a new place since.
+  function scrolled(from) {
     if (log.hidden) return;
+    const r = from || rec;
     const top = log.scrollTop;
-    if (Math.abs(top - rec.top) < 1) return;
+    if (Math.abs(top - r.top) < 1) return;
     const t = now();
     if (t < until) until = Math.max(until, t + 300);
-    else if (layoutMoved() || (pinned && t < fresh)) { keep("undo"); sync(); return; }
-    const up = top < rec.top;
+    else if (layoutMoved(r) || (pinned && t < fresh)) { keep("undo"); sync(); return; }
+    const up = top < r.top;
     note();
     // Only a real distance from the end leaves it: a tap's jitter, a
     // sub-pixel scrollTop after layout, or a log that grows taller (a
@@ -110,13 +114,22 @@ window.HubStick = (log, o) => {
 
   // scrollSoon is scrolled() once per frame: a wheel or a touch sends many
   // scroll events a frame, and each need not read the layout.
-  let scrollQueued = false;
+  let waiting = null;
+  // flushScroll judges a scroll that waits for its frame now: anything that
+  // moves the log or reads where it is must know first whether the reader
+  // moved it, or it would put the log back where the reader left it.
+  function flushScroll() {
+    if (!waiting) return;
+    const from = waiting;
+    waiting = null;
+    scrolled(from);
+  }
   function scrollSoon() {
-    if (scrollQueued) return;
-    scrollQueued = true;
+    if (waiting) return;
+    waiting = rec;
     // After the frame is drawn, when the layout is clean again: a scroll event
     // comes before the frame's writes, and what it reads would lay them out.
-    frame(() => later(() => { scrollQueued = false; scrolled(); }));
+    frame(() => later(() => { flushScroll(); if (pinned) pinSoon(); }));
   }
 
   // heard says the reader is scrolling, for ms (default hold) from now.
@@ -146,6 +159,7 @@ window.HubStick = (log, o) => {
     pinQueued = true;
     frame(() => {
       pinQueued = false;
+      flushScroll();
       if (pinned && gap() >= 1) pin();
     });
   }
