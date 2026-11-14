@@ -36,7 +36,7 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	179	162
+internal/device/legs.go	179	160
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	229	210
@@ -108,11 +108,11 @@ internal/service/live.go	370	326
 internal/service/manage.go	159	145
 internal/service/media.go	162	133
 internal/service/observe.go	61	50
-internal/service/outcome.go	95	88
+internal/service/outcome.go	95	90
 internal/service/page.go	63	57
 internal/service/pdf.go	74	56
 internal/service/rows.go	22	21
-internal/service/service.go	925	850
+internal/service/service.go	925	849
 internal/service/stopsend.go	93	77
 internal/service/subagentlog.go	178	146
 internal/service/toolout.go	39	32
@@ -121,7 +121,7 @@ internal/service/views.go	145	127
 internal/store/accounts.go	187	157
 internal/store/agents.go	83	70
 internal/store/answers.go	22	20
-internal/store/chats.go	86	71
+internal/store/chats.go	86	72
 internal/store/claudecode.go	97	79
 internal/store/device.go	200	166
 internal/store/import.go	74	61
@@ -141,7 +141,7 @@ internal/telegram/api.go	192	152
 internal/telegram/bot.go	666	543
 internal/telegram/budget.go	23	20
 internal/telegram/claude.go	107	89
-internal/telegram/commands.go	245	202
+internal/telegram/commands.go	245	203
 internal/telegram/computers.go	186	146
 internal/telegram/config.go	18	18
 internal/telegram/dmtopics.go	105	86
@@ -156,13 +156,13 @@ internal/telegram/render.go	512	467
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	380
+internal/telegram/topics.go	521	379
 internal/updates/updates.go	95	82
 internal/web/accounts.go	255	192
 internal/web/activity.go	135	93
 internal/web/admin.go	119	81
 internal/web/agent.go	263	169
-internal/web/api.go	320	248
+internal/web/api.go	320	250
 internal/web/assets.go	40	36
 internal/web/auth.go	143	110
 internal/web/authpages.go	44	40
