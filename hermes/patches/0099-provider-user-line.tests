@@ -1,0 +1,6 @@
+# The turn loop's API error handling and the failed-turn copy it ends with
+tests/agent/test_failed_turn_chat_copy.py
+tests/agent/test_outer_error_retry_bound.py
+tests/agent/test_retry_exhaustion_partial_retention.py
+tests/agent/test_free_tier_rate_limit_class.py
+tests/agent/test_turn_api_error_stream_parse.py

@@ -1,0 +1,252 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 07:53:41 +0000
+Subject: [PATCH] fix(turns): a provider's own line for the user ends the
+ turn as is
+
+When every Claude account in the pool was at its weekly limit, the pool raised one plain line ("All Claude accounts are at their limit ..."), yet the turn still went through the generic error path: it retried, then ended with "Rate limited after 3 retries" and the "Provider said:" copy around the line, or around the raw upstream error with its status code and request id.
+
+A provider error may now carry `hermes_user_message`: one plain sentence for the user, set by a provider that has already done every retry it can (an account pool with no account left). The turn then ends at once with that line as its whole reply and error: no retries, no fallback, the buffered retry chatter dropped, the raw error only in the log. `hermes_resets_at` (epoch seconds, optional) becomes `failure_resets_at`. The line is also found on a wrapped cause. Errors without it keep today's path. No new key.
+---
+ agent/provider_user_message.py            |  81 +++++++++++++++
+ agent/turn_api_error.py                   |  10 ++
+ tests/agent/test_provider_user_message.py | 114 ++++++++++++++++++++++
+ 3 files changed, 205 insertions(+)
+ create mode 100644 agent/provider_user_message.py
+ create mode 100644 tests/agent/test_provider_user_message.py
+
+diff --git a/agent/provider_user_message.py b/agent/provider_user_message.py
+new file mode 100644
+index 0000000000..60b031ccbd
+--- /dev/null
++++ b/agent/provider_user_message.py
+@@ -0,0 +1,81 @@
++"""A provider error that carries its own line for the user.
++
++A provider (or a provider plugin) that has already done every retry it can, such as an account pool
++whose accounts are all at their plan limit, sets ``hermes_user_message`` on the exception it raises:
++one plain sentence that says what happened and when it clears. The turn then ends at once with that
++line as its whole reply: no further retries or fallback, and no raw upstream text, status code or
++request id around it. ``hermes_resets_at`` (epoch seconds, optional) is when the provider expects to
++serve again, for clients that show a reset time.
++"""
++
++from __future__ import annotations
++
++import logging
++from typing import Any, Optional
++
++logger = logging.getLogger("agent.conversation_loop")
++
++USER_MESSAGE_ATTR = "hermes_user_message"
++RESETS_AT_ATTR = "hermes_resets_at"
++_MAX_CHARS = 300
++
++
++def _chain(error: Any):
++    """The error, then its causes and contexts, each once (bounded)."""
++    seen: set[int] = set()
++    current = error
++    while current is not None and id(current) not in seen and len(seen) < 8:
++        seen.add(id(current))
++        yield current
++        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
++
++
++def _carrier(error: Any) -> Any:
++    for item in _chain(error):
++        value = getattr(item, USER_MESSAGE_ATTR, None)
++        if isinstance(value, str) and value.strip():
++            return item
++    return None
++
++
++def provider_user_message(error: Any) -> Optional[str]:
++    """The provider's own line for the user, or None when the error carries none."""
++    item = _carrier(error)
++    if item is None:
++        return None
++    line = " ".join(getattr(item, USER_MESSAGE_ATTR).split())
++    return line if len(line) <= _MAX_CHARS else line[: _MAX_CHARS - 1].rstrip() + "\u2026"
++
++
++def provider_resets_at(error: Any) -> Optional[float]:
++    item = _carrier(error)
++    value = getattr(item, RESETS_AT_ATTR, None) if item is not None else None
++    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value <= 0:
++        return None
++    return float(value)
++
++
++def plain_provider_failure_result(
++    agent: Any, api_error: Any, classified: Any, line: str, *, messages: Any, conversation_history: Any,
++    api_call_count: int,
++) -> dict[str, Any]:
++    """The failed-turn result for a provider's own user line: that line and nothing else."""
++    # The retry chatter buffered so far ("Rate limited, retrying...") would print ahead of the line.
++    clear = getattr(agent, "_clear_status_buffer", None)
++    if callable(clear):
++        clear()
++    logger.warning(
++        "%sProvider ended the turn: %s | provider=%s model=%s error=%s",
++        getattr(agent, "log_prefix", ""), line, getattr(agent, "provider", ""), getattr(agent, "model", ""),
++        type(api_error).__name__,
++    )
++    agent._persist_session(messages, conversation_history)
++    reason = getattr(getattr(classified, "reason", None), "value", None) or "rate_limit"
++    result: dict[str, Any] = {
++        "final_response": line, "messages": messages, "api_calls": api_call_count,
++        "completed": False, "failed": True, "error": line,
++        "failure_reason": reason, "failure_retryable": False,
++    }
++    if (resets_at := provider_resets_at(api_error)) is not None:
++        result["failure_resets_at"] = resets_at
++    return result
+diff --git a/agent/turn_api_error.py b/agent/turn_api_error.py
+index 6c235d2b5f..4060cda8d2 100644
+--- a/agent/turn_api_error.py
++++ b/agent/turn_api_error.py
+@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
+ 
+ from agent.api_error_summary import is_provider_stream_parse_error
+ from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
++from agent.provider_user_message import plain_provider_failure_result, provider_user_message
+ from agent.route_verdicts import route_visit
+ from agent.turn_overflow import recover_from_overflow
+ from agent.turn_recovery import (
+@@ -143,6 +144,15 @@ def handle_api_error(
+         reason=classified.reason.value,
+     )
+ 
++    # A provider that already tried everything it has (an account pool with every account at its
++    # limit) says so in one line meant for the user. Retrying, falling back or wrapping it in the
++    # generic "rate-limited after N attempts ... Provider said:" copy would only bury that line.
++    if (_plain := provider_user_message(api_error)) is not None:
++        return _verdict("return", plain_provider_failure_result(
++            agent, api_error, classified, _plain, messages=messages,
++            conversation_history=conversation_history, api_call_count=api_call_count,
++        ))
++
+     _recovered, recovered_with_pool = recover_after_classification(
+         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,
+         messages=messages, api_messages=api_messages,
+diff --git a/tests/agent/test_provider_user_message.py b/tests/agent/test_provider_user_message.py
+new file mode 100644
+index 0000000000..8b263216a7
+--- /dev/null
++++ b/tests/agent/test_provider_user_message.py
+@@ -0,0 +1,114 @@
++"""A provider error that carries its own line for the user (``hermes_user_message``) ends the turn at
++once with that line alone: no retries, no fallback, no raw upstream text or request id.
++
++The case behind it: an account pool with every Claude account at its weekly limit raised one plain
++line ("All Claude accounts are at their limit. The first frees up at 10:09 PM CST."), and the turn
++still retried three times and ended with "Rate limited after 3 retries ... Provider said: ..." around
++it, or around the raw upstream error with its request id.
++"""
++from __future__ import annotations
++
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from agent.provider_user_message import provider_resets_at, provider_user_message
++
++LINE = "All Claude accounts are at their limit. The first frees up at 10:09 PM CST."
++RAW = ("HTTP 429: Incomplete upstream response (first upstream attempt: status 429, capture incomplete): "
++       "You've hit your weekly limit \u00b7 resets Nov 16, 6am (UTC) (request_id=req_0123456789abcdef)")
++
++
++class PoolExhausted(RuntimeError):
++    status_code = 429
++
++    def __init__(self, raw, line=None, resets_at=None):
++        super().__init__(raw)
++        if line is not None:
++            self.hermes_user_message = line
++        if resets_at is not None:
++            self.hermes_resets_at = resets_at
++
++
++@pytest.fixture()
++def loop_agent():
++    from run_agent import AIAgent
++
++    with (
++        patch("model_tools.get_tool_definitions", return_value=[]),
++        patch("model_tools.check_toolset_requirements", return_value={}),
++        patch("agent.process_bootstrap.OpenAI"),
++    ):
++        agent = AIAgent(
++            api_key="test-key-1234567890",
++            base_url="https://openrouter.ai/api/v1",
++            quiet_mode=True,
++            skip_context_files=True,
++            skip_memory=True,
++        )
++        agent.client = MagicMock()
++        agent._cached_system_prompt = "You are helpful."
++        agent._use_prompt_caching = False
++        agent.tool_delay = 0
++        agent.compression_enabled = False
++        agent.save_trajectories = False
++        agent._fallback_chain = []
++        agent.statuses = []
++        agent._emit_diagnostic_status = lambda message, *a, **k: agent.statuses.append(str(message))
++        yield agent
++
++
++def _run(agent, error):
++    agent.client.chat.completions.create.side_effect = error
++    with patch("agent.turn_recovery.interruptible_backoff_sleep", return_value=False), \
++            patch("time.sleep", return_value=None):
++        return agent.run_conversation("hello")
++
++
++def test_the_user_line_ends_the_turn_at_once_with_only_that_line(loop_agent):
++    result = _run(loop_agent, PoolExhausted(RAW, LINE, resets_at=1763400000.0))
++    assert loop_agent.client.chat.completions.create.call_count == 1
++    assert result["failed"] is True and result["completed"] is False
++    assert result["final_response"] == LINE
++    assert result["error"] == LINE
++    assert result["failure_retryable"] is False
++    # The classifier's own reason for the error (a plan limit reads as rate_limit or billing).
++    assert result["failure_reason"] in ("rate_limit", "billing")
++    assert result["failure_resets_at"] == 1763400000.0
++    shown = "\n".join([result["final_response"], *loop_agent.statuses])
++    for raw in ("request_id", "Incomplete upstream", "HTTP 429", "Provider said", "retries", "hit your weekly"):
++        assert raw not in shown
++
++
++def test_without_the_line_the_error_keeps_the_normal_path(loop_agent):
++    """Control: the same 429 with no user line keeps today's copy, raw provider text included."""
++    result = _run(loop_agent, PoolExhausted(RAW))
++    assert result["failed"] is True
++    assert result["final_response"] != LINE
++    assert "hit your weekly limit" in "\n".join([result["final_response"], *loop_agent.statuses])
++
++
++def test_the_line_is_found_on_a_wrapped_cause():
++    inner = PoolExhausted(RAW, LINE)
++    try:
++        try:
++            raise inner
++        except PoolExhausted as exc:
++            raise RuntimeError("stream failed") from exc
++    except RuntimeError as outer:
++        assert provider_user_message(outer) == LINE
++        assert provider_resets_at(outer) is None
++
++
++@pytest.mark.parametrize("value", [None, "", "   ", 42, b"bytes"])
++def test_no_line_without_a_real_string(value):
++    error = RuntimeError("x")
++    error.hermes_user_message = value
++    assert provider_user_message(error) is None
++
++
++def test_the_line_is_one_short_line():
++    error = RuntimeError("x")
++    error.hermes_user_message = "All accounts\nare full.  " + "x" * 400
++    line = provider_user_message(error)
++    assert "\n" not in line and len(line) <= 300 and line.startswith("All accounts are full.")
