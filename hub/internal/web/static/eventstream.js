@@ -90,7 +90,10 @@ window.HubStream = (url, h, o) => {
     let target = lastId ? url + (url.includes("?") ? "&" : "?") + "since=" + encodeURIComponent(lastId) : url;
     const more = opt.query ? opt.query() : "";
     if (more) target += (target.includes("?") ? "&" : "?") + more;
-    const src = new EventSource(target);
+    // The stream this page opened before its scripts ran, when it is the
+    // one asked for: its first events are here already.
+    const early = window.HubEarlyStream ? window.HubEarlyStream.take(target) : null;
+    const src = early ? early.es : new EventSource(target);
     es = src;
     src.onopen = () => {
       if (dead || es !== src) return;
@@ -113,6 +116,14 @@ window.HubStream = (url, h, o) => {
       giveUpCheck();
       retryTimer = setTimeout(connect, moving ? moveWait : wait.next());
     };
+    if (early) {
+      // After the caller has its handle (a handler may use it).
+      queueMicrotask(() => {
+        if (src.readyState === EventSource.OPEN) src.onopen();
+        for (const m of early.got) src.onmessage(m);
+        if (early.failed) src.onerror();
+      });
+    }
   }
 
   connect();
@@ -128,3 +139,32 @@ window.HubStream = (url, h, o) => {
     },
   };
 };
+
+// HubEarlyStream opens the event stream of the chat the page loads on
+// (#/s/<backend>/<session>) as soon as this file runs, before the page
+// asks who the user is and builds itself, and keeps what comes until
+// HubStream takes it over. take(url) gives it to the first HubStream for
+// that URL; any other URL, or none in 10 s, closes it.
+window.HubEarlyStream = (() => {
+  if (typeof location === "undefined" || typeof document === "undefined") return null;
+  const m = /^#\/s\/([^/?#]+)\/([^/?#]+)$/.exec(location.hash);
+  if (!m || document.documentElement.classList.contains("pagechat") || typeof EventSource !== "function") return null;
+  const url = "/api/sessions/" + m[1] + "/" + m[2] + "/events";
+  const es = new EventSource(url);
+  const s = { es, got: [], failed: false };
+  es.onmessage = (e) => { s.got.push(e); };
+  es.onerror = () => { s.failed = true; es.close(); };
+  let taken = false;
+  const drop = () => { if (!taken) { taken = true; es.close(); } };
+  setTimeout(drop, 10000);
+  return {
+    take(target) {
+      if (taken) return null;
+      taken = true;
+      if (target !== url || s.failed) { es.close(); return null; }
+      es.onmessage = null;
+      es.onerror = null;
+      return s;
+    },
+  };
+})();
