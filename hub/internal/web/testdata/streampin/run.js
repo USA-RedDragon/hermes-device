@@ -21,6 +21,10 @@ const { proc, connect } = require("../cdp.js").launch(bin, dir);
   const gap = `(() => { const l = document.getElementById("log"); return l.scrollHeight - l.scrollTop - l.clientHeight; })()`;
   assert.ok((await ev(gap)) < 2, "the chat opens at its end");
 
+  // The reply keeps growing, and the page draws what arrived once a frame, so a
+  // sample can land between a word and its frame: the block is compared with a
+  // full render of the text it holds, sampled until the two are from the same frame.
+  const matches = async () => { let r; for (let i = 0; i < 200; i++) { r = await ev(same); if (r.live) return r; await new Promise((f) => setTimeout(f, 7)); } return r; };
   // Watch the gap each frame from the first streamed word on.
   await ev(`window.__gaps = []; window.__watch = true; (() => { const l = document.getElementById("log"); const f = () => { if (/tok0 /.test(l.textContent)) window.__gaps.push(l.scrollHeight - l.scrollTop - l.clientHeight); if (window.__watch) requestAnimationFrame(f); }; requestAnimationFrame(f); })(); 1`);
   fs.writeFileSync(signal, "go");
@@ -30,8 +34,7 @@ const { proc, connect } = require("../cdp.js").launch(bin, dir);
   await c.frames(6);
   const same = `(() => { const nodes = document.querySelectorAll("#log .msg.assistant.md"); const n = nodes[nodes.length - 1]; const d = document.createElement("div"); window.hubMarkdown.render(d, n.raw); const plain = (x) => { const c = x.cloneNode(true); c.querySelectorAll("code.hljs").forEach((k) => { k.textContent = k.textContent; k.removeAttribute("class"); }); return c.innerHTML; }; return { live: plain(n) === plain(d), inc: !!n.mdInc, kids: n.childNodes.length, raw: n.raw.length }; })()`;
   // Under load the frame that draws the last words can come late: wait for it.
-  await c.until(`${same}.live`, "the streamed block to match a full render").catch(() => {});
-  let s = await ev(same);
+  let s = await matches();
   assert.ok(s.live, "mid-stream block differs from a full render: " + JSON.stringify(s));
   assert.ok(s.inc && s.kids > 3, "the stream drew incrementally: " + JSON.stringify(s));
   let gaps = await ev(`window.__gaps.slice()`);
@@ -56,7 +59,7 @@ const { proc, connect } = require("../cdp.js").launch(bin, dir);
   // The end: the reply is what a full render of its text draws.
   await c.until(`/final-end/.test(document.getElementById("log").textContent)`, "the reply to end");
   await c.frames(6);
-  s = await ev(same);
+  s = await matches();
   assert.ok(s.live, "the final block differs from a full render: " + JSON.stringify(s));
   console.log("ok");
   c.close();
