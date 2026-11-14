@@ -9,7 +9,7 @@ const { proc, connect } = require("../cdp.js").launch(bin, dir);
 (async () => {
   const c = await connect();
   const { ev } = c;
-  await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0`, "the page");
+  await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0 && !!window.hubMarkdown`, "the page");
   const r = await ev(`(() => {
     let seed = 12345;
     const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
