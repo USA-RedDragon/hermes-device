@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,20 +127,57 @@ func setupService(t *testing.T, fn func(cfg *config.Config, opts *web.Options, s
 
 // frontDoor sends every request to one hub, as a load balancer in front
 // of replicas; to switches it to another.
-type frontDoor struct{ h atomic.Pointer[http.Handler] }
+type frontDoor struct {
+	h    atomic.Pointer[http.Handler]
+	mu   sync.Mutex
+	open map[*http.Request]context.CancelFunc
+}
 
 func (f *frontDoor) to(h http.Handler) { f.h.Store(&h) }
 
-func (f *frontDoor) ServeHTTP(w http.ResponseWriter, r *http.Request) { (*f.h.Load()).ServeHTTP(w, r) }
+// cut ends every request in flight, as a hub that is restarted does to
+// its event streams.
+func (f *frontDoor) cut() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.open {
+		c()
+	}
+}
+
+func (f *frontDoor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	r = r.WithContext(ctx)
+	f.mu.Lock()
+	if f.open == nil {
+		f.open = map[*http.Request]context.CancelFunc{}
+	}
+	f.open[r] = cancel
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		delete(f.open, r)
+		f.mu.Unlock()
+		cancel()
+	}()
+	(*f.h.Load()).ServeHTTP(w, r)
+}
 
 // replica starts a second hub on e's store and config, as the other
 // replica of a hub with two, which has seen nothing of the backends, and
 // returns its handler for e.front.
 func (e *hubEnv) replica(t *testing.T) http.Handler {
 	t.Helper()
+	return e.replicaAt(t, e.opts.Version)
+}
+
+// replicaAt is replica running release version, as a hub after an update.
+func (e *hubEnv) replicaAt(t *testing.T, version string) http.Handler {
+	t.Helper()
 	svc := service.New(e.cfg.Backends, e.store, e.so)
 	t.Cleanup(svc.Close)
 	opts := e.opts
+	opts.Version = version
 	opts.Service = svc
 	s, err := web.New(e.cfg, opts)
 	if err != nil {
