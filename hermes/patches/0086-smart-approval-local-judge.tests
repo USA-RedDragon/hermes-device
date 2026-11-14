@@ -1,0 +1,6 @@
+# The provenance review it changes, and the approval paths that call it
+tests/tools/test_smart_provenance.py
+tests/tools/test_smart_provenance_live_root.py
+tests/tools/test_approval_provenance.py
+tests/tools/test_subagent_approval_routing.py
+tests/tools/test_approval.py
