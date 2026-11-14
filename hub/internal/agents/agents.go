@@ -616,7 +616,7 @@ func (r *Router) resolve(ctx context.Context, b config.Backend, c device.AgentCa
 	if c.SubagentID != "" && hit.ID == c.RootSessionID {
 		t.inboxFirst = true
 		if c.ParentSubagentID == "" {
-			t.label = "your parent chat " + t.label
+			t.label = "your parent " + t.label
 		}
 	}
 	return t, nil

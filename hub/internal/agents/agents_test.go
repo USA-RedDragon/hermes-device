@@ -842,3 +842,19 @@ func TestSendToBusyChatSteersAndSaysSo(t *testing.T) {
 		}
 	}
 }
+
+// A subagent that names its parent chat gets "your parent chat 'x' (session
+// s1)" back, not "your parent chat chat 'x'".
+func TestSendToParentChatByIDNamesItOnce(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	a := e.do("send", subagentCaller(), map[string]string{"to": "s1", keyText: "found it"})
+	if a.code != "" {
+		t.Fatalf("refused: %s %s", a.code, a.msg)
+	}
+	res, _ := a.result.(map[string]any)
+	to, _ := res["to"].(string)
+	if !strings.HasPrefix(to, "your parent chat '") || strings.Contains(to, "chat chat") {
+		t.Fatalf("to = %q", to)
+	}
+}
